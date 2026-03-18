@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: open-source-evaluator
+Version: 0.1.0
+Summary: Multi-agent system for evaluating open source projects
+Requires-Python: >=3.10
+Requires-Dist: langgraph>=0.2.0
+Requires-Dist: langchain-core>=0.3.0
+Requires-Dist: langchain-openai>=0.2.0
+Requires-Dist: pyyaml>=6.0
+Requires-Dist: pydantic>=2.0
+Requires-Dist: gitpython>=3.1.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: ruff>=0.6.0; extra == "dev"
