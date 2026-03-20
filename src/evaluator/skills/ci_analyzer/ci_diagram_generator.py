@@ -72,6 +72,30 @@ def generate_llm_prompt(raw_data: Dict) -> str:
 - 不能使用"..."或其他省略符号
 - 即使Job数量很多，也必须全部列出
 
+### 6. 深度分析与隐式关联发现
+
+除了显式调用关系，请分析以下隐式关联：
+
+1. **外部系统集成**：
+   - 识别工作流调用的外部系统（如 blossom-action、自定义 Action）
+   - 关联项目中的外部 CI 配置（Jenkins Pipeline、其他 CI 脚本）
+   - 推断外部系统调用与本地脚本的关联
+
+2. **脚本调用链**：
+   - 分析工作流执行的脚本
+   - 追踪脚本调用的其他脚本
+   - 构建完整的脚本依赖链
+
+3. **多 CI 系统协作**：
+   - 分析项目是否使用多套 CI 系统
+   - 识别不同 CI 系统之间的协作关系
+   - 在调用关系树中展示跨系统调用
+
+在附录的调用关系树中，请包含：
+- 显式调用（Action、脚本）
+- 外部系统调用（标注为 [外部系统]）
+- 推断的隐式关联（标注为 [推断]）
+
 ---
 
 ## 项目数据
@@ -99,6 +123,40 @@ def generate_llm_prompt(raw_data: Dict) -> str:
                 prompt += f"  - {s}\n"
             if len(scripts) > 10:
                 prompt += f"  ... (+{len(scripts)-10} more)\n"
+        prompt += "```\n\n"
+    
+# Add Jenkins pipelines
+    jenkins_pipelines = raw_data.get("jenkins_pipelines", [])
+    if jenkins_pipelines:
+        prompt += "### Jenkins Pipeline 文件\n```\n"
+        for jp in jenkins_pipelines[:20]:
+            jp_path = jp.get('path', jp.get('name', str(jp))) if isinstance(jp, dict) else str(jp)
+            prompt += f"- {jp_path}\n"
+        if len(jenkins_pipelines) > 20:
+            prompt += f"... 共 {len(jenkins_pipelines)} 个\n"
+        prompt += "```\n\n"
+    
+    # Add external CI related scripts
+    external_ci_scripts = raw_data.get("external_ci_scripts", [])
+    if external_ci_scripts:
+        prompt += "### 外部 CI 相关脚本\n```\n"
+        for script in external_ci_scripts[:30]:
+            script_path = script.get('path', script.get('name', str(script))) if isinstance(script, dict) else str(script)
+            prompt += f"- {script_path}\n"
+        if len(external_ci_scripts) > 30:
+            prompt += f"... 共 {len(external_ci_scripts)} 个\n"
+        prompt += "```\n\n"
+    
+    # Add other CI configs
+    other_ci_configs = raw_data.get("other_ci_configs", {})
+    if other_ci_configs:
+        prompt += "### 其他 CI 配置\n```\n"
+        for config_type, configs in other_ci_configs.items():
+            if configs and isinstance(configs, list):
+                for cfg in configs[:5]:
+                    prompt += f"- {cfg}\n"
+            elif configs:
+                prompt += f"- {config_type}: {configs}\n"
         prompt += "```\n\n"
     
     # Add workflow relationships first
@@ -455,14 +513,15 @@ def generate_llm_prompt(raw_data: Dict) -> str:
    │   └── 调用:
    │       └── .github/scripts/pr_checklist_check.py
    │
-   ├── blossom-ci.yml (手动/评论触发)
-   │   ├── Jobs:
-   │   │   └── Authorization → Vulnerability-scan → Job-trigger
-   │   └── 调用:
-   │       ├── NVIDIA/blossom-action@main
-   │       └── 外部 Jenkins 系统
-   │
-   └── ...
+    ├── blossom-ci.yml (手动/评论触发)
+    │   ├── Jobs:
+    │   │   └── Authorization → Vulnerability-scan → Job-trigger
+    │   └── 调用:
+    │       ├── NVIDIA/blossom-action@main [外部系统]
+    │       ├── 外部 Jenkins 系统 [推断]
+    │       └── jenkins/scripts/*.groovy [推断关联]
+    │
+    └── ...
    ```
    
    树状结构要求：
@@ -570,10 +629,84 @@ ARCHITECTURE_JSON -->
 2. **必须完整列出每个工作流的所有Job，不能省略**
 3. **必须输出 JSON 架构图数据**
 4. **必须包含附录：工作流调用关系图**
-5. 不要硬编码分类，根据实际内容分析
-6. 展示调用关系和依赖关系
-7. 提供足够的细节但不冗余
-8. 使用清晰的层级结构
+5. **必须输出评估评分 JSON（见第三部分）**
+6. 不要硬编码分类，根据实际内容分析
+7. 展示调用关系和依赖关系
+8. 提供足够的细节但不冗余
+9. 使用清晰的层级结构
+
+---
+
+## 第三部分：评估评分（必须输出）
+
+**必须**在 Markdown 文档末尾、JSON 架构图数据之后，输出评估评分 JSON：
+
+```json
+<!-- ANALYSIS_SUMMARY
+{
+  "scores": {
+    "architecture_design": 8,
+    "best_practices": 7,
+    "security": 6,
+    "maintainability": 7,
+    "scalability": 6
+  },
+  "score_rationale": {
+    "architecture_design": "工作流按阶段清晰划分，依赖关系明确...",
+    "best_practices": "使用了缓存和矩阵构建，但缺少复用策略...",
+    "security": "缺少安全扫描步骤，密钥管理需加强...",
+    "maintainability": "脚本复用较好，但文档不够完整...",
+    "scalability": "支持多平台构建，但环境配置分散..."
+  },
+  "findings": {
+    "strengths": [
+      "使用了矩阵构建，支持多平台测试",
+      "缓存配置完善，构建速度快"
+    ],
+    "weaknesses": [
+      "缺少 SAST/DAST 安全扫描",
+      "部署流程缺少审批机制"
+    ]
+  },
+  "recommendations": [
+    {"priority": "high", "content": "添加 SAST 安全扫描（如 CodeQL）"},
+    {"priority": "high", "content": "实现部署审批流程"},
+    {"priority": "medium", "content": "使用 Reusable Workflow 减少重复配置"},
+    {"priority": "low", "content": "完善工作流文档注释"}
+  ]
+}
+ANALYSIS_SUMMARY -->
+```
+
+**评分维度说明**：
+| 维度 | 评分标准 | 考虑因素 |
+|------|----------|----------|
+| architecture_design | 工作流组织、阶段划分、依赖管理 | 1. 工作流是否按功能合理划分 2. 阶段之间依赖关系是否清晰 3. 是否避免不必要的跨阶段依赖 |
+| best_practices | 缓存使用、矩阵构建、复用策略、错误处理 | 1. 是否使用缓存加速构建 2. 是否使用矩阵策略测试多平台 3. 是否有复用策略（Reusable Workflow/Action）4. 错误处理是否完善 |
+| security | 权限控制、密钥管理、安全扫描、审计日志 | 1. 权限是否遵循最小原则 2. 密钥是否通过 secrets 管理 3. 是否有安全扫描（SAST/DAST/依赖扫描）4. 敏感操作是否有审计 |
+| maintainability | 代码复用、文档完整性、命名规范、测试覆盖 | 1. 是否有独立的脚本库 2. 工作流是否有注释和文档 3. 命名是否规范清晰 4. 是否覆盖主要场景 |
+| scalability | 环境支持、部署策略、配置管理、扩展能力 | 1. 支持多少种运行环境 2. 部署策略是否灵活 3. 配置是否集中管理 4. 新增工作流是否容易 |
+
+**评分标准（1-10分）**：
+- 9-10: 优秀，业界最佳实践，在大多数开源项目中属于Top 10%
+- 7-8: 良好，大部分实践到位，有少量改进空间
+- 5-6: 一般，基本实践到位，但有明显短板
+- 3-4: 较差，存在较多问题，需要系统性改进
+- 1-2: 很差，架构设计有严重问题，建议重构
+
+**评分要求**：
+1. 必须基于实际分析结果评分，不能套用模板
+2. 每个维度的评分必须有对应的 `score_rationale` 说明
+3. `findings` 必须从实际分析中提炼，不能凭空编造
+4. `recommendations` 必须与 `findings` 对应，有优先级区分
+5. high 优先级建议最多 2 条，medium 最多 3 条，low 适量
+
+**检查清单**：
+- [ ] scores 包含全部 5 个维度
+- [ ] score_rationale 对每个维度都有说明
+- [ ] findings.strengths 和 findings.weaknesses 都至少 1 条
+- [ ] recommendations 有明确的 priority 区分
+- [ ] JSON 格式正确，可被解析
 """
 
     return prompt
@@ -731,6 +864,16 @@ def _generate_global_context(raw_data: Dict) -> str:
     ci_dirs = raw_data.get("ci_directories", [])
     if ci_dirs:
         context += f"### CI相关目录\n{', '.join(ci_dirs)}\n\n"
+    
+    # Jenkins pipelines
+    jenkins_pipelines = raw_data.get("jenkins_pipelines", [])
+    if jenkins_pipelines:
+        context += f"### Jenkins Pipeline 文件\n共 {len(jenkins_pipelines)} 个\n\n"
+    
+    # External CI scripts
+    external_ci_scripts = raw_data.get("external_ci_scripts", [])
+    if external_ci_scripts:
+        context += f"### 外部 CI 相关脚本\n共 {len(external_ci_scripts)} 个\n\n"
     
     # Workflow relationships (complete)
     relationships = raw_data.get("relationships", {})

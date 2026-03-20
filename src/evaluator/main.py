@@ -3,40 +3,33 @@ import sys
 import io
 import os
 
-# 设置控制台编码
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
 
-# 加载 .env 文件
 from dotenv import load_dotenv
 from pathlib import Path
 
-# 查找 .env 文件
-env_path = Path(__file__).parent.parent.parent.parent / ".env"
+env_path = Path(__file__).parent.parent.parent / ".env"
 if env_path.exists():
     load_dotenv(env_path)
-    print(f"已加载配置: {env_path}")
 else:
-    load_dotenv()  # 尝试从当前目录加载
+    load_dotenv()
 
 from evaluator.graph import create_graph
 from evaluator.llm import LLMClient
+from evaluator.ui import init_ui_manager
 
 
 def main():
     """主入口"""
-    # 支持命令行参数
     user_input = sys.argv[1] if len(sys.argv) > 1 else None
 
-    # 创建 LLM 客户端
-    llm = None
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
-    model = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
+    model = os.getenv("DEFAULT_MODEL", "glm-4")
+    use_rich = os.getenv("USE_RICH", "true").lower() != "false"
 
+    llm = None
     if api_key:
-        print(f"\nLLM 配置:")
-        print(f"  Model: {model}")
-        print(f"  Base URL: {base_url}")
         llm = LLMClient(
             api_key=api_key,
             base_url=base_url,
@@ -45,15 +38,19 @@ def main():
     else:
         print("\n警告: 未配置 LLM API Key，CI/CD 分析将无法执行")
 
-    # 创建工作流
-    app = create_graph(user_input=user_input, llm=llm)
+    app = create_graph(
+        user_input=user_input,
+        llm=llm,
+        use_rich=use_rich,
+    )
 
-    # 初始状态
     initial_state = {
+        "ui_manager": None,
         "user_input": None,
         "project_url": None,
         "project_path": None,
         "project_name": None,
+        "display_name": None,
         "clone_status": None,
         "clone_error": None,
         "cicd_analysis": None,
@@ -62,29 +59,25 @@ def main():
         "should_download": False,
         "current_step": "",
         "errors": [],
+        "storage_version_id": None,
+        "storage_dir": None,
     }
 
-    # 执行工作流
     result = app.invoke(initial_state)
 
-    # 输出结果摘要
-    print("\n" + "=" * 50)
-    print("  执行完成")
-    print("=" * 50)
-    print(f"  当前步骤: {result.get('current_step')}")
-    print(f"  项目名称: {result.get('project_name')}")
-    print(f"  项目路径: {result.get('project_path')}")
+    from evaluator.ui import get_ui_manager, display_result
+    ui = get_ui_manager()
 
-    if result.get("clone_status"):
-        print(f"  克隆状态: {result.get('clone_status')}")
+    stats = {}
+    if result.get("cicd_analysis"):
+        stats["工作流"] = result["cicd_analysis"].get("workflows_count", 0)
+        stats["Actions"] = result["cicd_analysis"].get("actions_count", 0)
 
-    if result.get("errors"):
-        print(f"\n  错误:")
-        for err in result["errors"]:
-            print(f"    - {err}")
-
-    if result.get("report_path"):
-        print(f"\n  报告路径: {result.get('report_path')}")
+    display_result({
+        "stats": stats,
+        "report_path": result.get("report_path"),
+        "errors": result.get("errors", []),
+    }, ui)
 
 
 if __name__ == "__main__":
