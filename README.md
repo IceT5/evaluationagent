@@ -260,7 +260,7 @@ pytest tests/
 pip install pyinstaller
 
 # Windows
-pyinstaller --onefile --name eval-agent src/evaluator/main.py
+pyinstaller --onefile --name eval-agent.exe src\evaluator\main.py
 
 # macOS/Linux
 pyinstaller --onefile --name eval-agent src/evaluator/main.py
@@ -274,4 +274,4 @@ pyinstaller --onefile --name eval-agent src/evaluator/main.py
 
 ## License
 
-MIT
+Apache2.0
