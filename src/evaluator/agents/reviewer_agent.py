@@ -47,7 +47,7 @@ VALID_TRIGGERS = {
 class ReviewerAgent:
     """报告验证 Agent - 确保报告准确且完整"""
     
-    def __init__(self, llm: LLMClient = None):
+    def __init__(self, llm: Optional[LLMClient] = None):
         self.llm = llm
     
     # 常见非 Job 关键词（用于过滤）
@@ -453,6 +453,9 @@ class ReviewerAgent:
         if not section:
             return known_jobs
         
+        if self.llm is None:
+            return known_jobs
+        
         prompt = f"""从以下关于工作流 '{wf_name}' 的描述中，提取所有提及的 Job 名称。
 
 该工作流的实际 Job 名称（供参考）：{list(known_jobs) if known_jobs else '未知'}
@@ -493,6 +496,8 @@ class ReviewerAgent:
                 else:
                     print(f"    ⚠️ LLM 提取失败: {e}")
                     raise
+        
+        return set()
     
     def _extract_jobs_by_code(self, section: str, known_jobs: Set[str]) -> Set[str]:
         """代码提取 Job（降级方案）- 保守策略"""
@@ -941,3 +946,326 @@ class ReviewerAgent:
             "missing_stages": missing_stages,
             "workflow_coverage": coverage
         }
+    
+    def validate_final_reports(
+        self,
+        md_report_path: str,
+        html_report_path: str,
+        ci_data: dict,
+    ) -> Dict[str, Any]:
+        """验证最终报告（Markdown 和 HTML）
+        
+        Args:
+            md_report_path: Markdown 报告路径
+            html_report_path: HTML 报告路径
+            ci_data: CI 数据
+        
+        Returns:
+            {
+                "valid": bool,
+                "md_issues": List[str],
+                "html_issues": List[str],
+            }
+        """
+        result = {
+            "valid": True,
+            "md_issues": [],
+            "html_issues": [],
+        }
+        
+        # 1. 验证 Markdown 报告
+        if Path(md_report_path).exists():
+            md_content = Path(md_report_path).read_text(encoding="utf-8")
+            
+            # 1.1 检查必要章节存在且内容非空
+            required_sections = {
+                "项目概述": r'^##\s+项目概述\s*$(.*?)(?=^##\s+|^<!--|\Z)',
+                "架构图": r'^##\s+.*架构图\s*$(.*?)(?=^##\s+|^<!--|\Z)',
+                "关键发现和建议": r'^##\s+.*发现.*建议\s*$(.*?)(?=^##\s+|^<!--|\Z)',
+                "附录": r'^##\s+附录\s*$(.*?)(?=^##\s+|^<!--|\Z)',
+            }
+            
+            for section_name, pattern in required_sections.items():
+                match = re.search(pattern, md_content, re.MULTILINE | re.DOTALL)
+                if not match:
+                    result["md_issues"].append(f"缺失章节: {section_name}")
+                    result["valid"] = False
+                elif not match.group(1).strip():
+                    result["md_issues"].append(f"章节内容为空: {section_name}")
+                    result["valid"] = False
+            
+            # 1.2 检查工作流覆盖率
+            expected_workflows = set(ci_data.get("workflows", {}).keys())
+            found_workflows = set(re.findall(r'####\s+\d+\.\d+\s+([\w-]+\.yml)', md_content))
+            missing_workflows = expected_workflows - found_workflows
+            if missing_workflows:
+                result["md_issues"].append(f"缺失工作流: {list(missing_workflows)[:5]}")
+                result["valid"] = False
+            
+            # 1.3 检查 ARCHITECTURE_JSON 存在
+            if not re.search(r'<!--\s*ARCHITECTURE_JSON', md_content):
+                result["md_issues"].append("缺失 ARCHITECTURE_JSON")
+                result["valid"] = False
+        else:
+            result["md_issues"].append("Markdown 报告文件不存在")
+            result["valid"] = False
+        
+        # 2. 验证 HTML 报告
+        if Path(html_report_path).exists():
+            html_content = Path(html_report_path).read_text(encoding="utf-8")
+            
+            # 2.1 检查必要 section 存在且内容非空
+            required_sections_html = {
+                "overview": "项目概述",
+                "findings": "关键发现和建议",
+                "appendix": "附录",
+            }
+            
+            for section_id, section_name in required_sections_html.items():
+                # 检查 section 存在
+                section_match = re.search(
+                    rf'<section id="{section_id}"[^>]*>.*?<div[^>]*class="section-content"[^>]*>(.*?)</div>\s*</section>',
+                    html_content, re.DOTALL
+                )
+                if not section_match:
+                    result["html_issues"].append(f"缺失 section: {section_id} ({section_name})")
+                    result["valid"] = False
+                else:
+                    content = section_match.group(1).strip()
+                    # 检查是否为空或显示"暂无"
+                    if not content or "暂无" in content:
+                        result["html_issues"].append(f"section 内容为空: {section_id} ({section_name})")
+                        result["valid"] = False
+            
+            # 2.2 检查架构图数据存在
+            if 'const architectureData = {"layers"' not in html_content and 'const architectureData = {}' not in html_content:
+                result["html_issues"].append("缺失架构图数据或数据为空")
+                result["valid"] = False
+        else:
+            result["html_issues"].append("HTML 报告文件不存在")
+            result["valid"] = False
+        
+        return result
+
+    def validate_architecture_completeness(
+        self,
+        ci_data: dict,
+        architecture: dict
+    ) -> dict:
+        """
+        验证架构完整性
+        
+        检查 architecture.json 是否包含 ci_data.json 中的所有工作流，
+        以及触发入口层是否包含所有触发类型。
+        
+        Args:
+            ci_data: ci_data.json 内容
+            architecture: architecture.json 内容
+        
+        Returns:
+            {
+                "is_complete": bool,
+                "missing_workflows": list[str],
+                "trigger_types_in_ci": set[str],
+                "trigger_types_in_arch": set[str],
+                "missing_trigger_types": set[str],
+                "layer_workflow_count": int,
+                "ci_workflow_count": int,
+            }
+        """
+        result = {
+            "is_complete": True,
+            "missing_workflows": [],
+            "trigger_types_in_ci": set(),
+            "trigger_types_in_arch": set(),
+            "missing_trigger_types": set(),
+            "layer_workflow_count": 0,
+            "ci_workflow_count": 0,
+        }
+        
+        # 1. 统计 ci_data 中的工作流和触发类型
+        workflows = ci_data.get("workflows", {})
+        result["ci_workflow_count"] = len(workflows)
+        ci_workflow_names = set(workflows.keys())
+        
+        for wf in workflows.values():
+            for trigger in wf.get("triggers", []):
+                result["trigger_types_in_ci"].add(trigger)
+        
+        # 2. 统计 architecture 中的工作流和触发类型
+        layers = architecture.get("layers", [])
+        
+        for layer in layers:
+            nodes = layer.get("nodes", [])
+            layer_name = layer.get("name", "")
+            
+            # 统计工作流节点
+            if "触发" in layer_name:
+                # 触发入口层：统计触发类型
+                for node in nodes:
+                    label = node.get("label", "")
+                    if "事件" in label or "dispatch" in label:
+                        trigger_name = label.replace(" 事件", "").replace("dispatch", "workflow_dispatch")
+                        result["trigger_types_in_arch"].add(trigger_name)
+            else:
+                # 其他层：统计工作流节点
+                for node in nodes:
+                    label = node.get("label", "")
+                    if label.endswith(".yml"):
+                        result["layer_workflow_count"] += 1
+        
+        # 3. 找出遗漏的工作流
+        arch_workflow_labels = set()
+        for layer in layers:
+            for node in layer.get("nodes", []):
+                label = node.get("label", "")
+                if label.endswith(".yml"):
+                    arch_workflow_labels.add(label)
+        
+        result["missing_workflows"] = sorted(list(ci_workflow_names - arch_workflow_labels))
+        
+        # 4. 找出遗漏的触发类型
+        result["missing_trigger_types"] = result["trigger_types_in_ci"] - result["trigger_types_in_arch"]
+        
+        # 5. 判断是否完整
+        result["is_complete"] = (
+            len(result["missing_workflows"]) == 0 and
+            len(result["missing_trigger_types"]) == 0
+        )
+        
+        return result
+
+    def validate_statistics_consistency(
+        self,
+        ci_data: dict,
+        statistics: dict,
+        architecture: dict
+    ) -> dict:
+        """
+        验证统计数据一致性
+        
+        检查 statistics 中的各项数据是否与 ci_data 和 architecture 一致。
+        
+        Args:
+            ci_data: ci_data.json 内容
+            statistics: _generate_statistics() 生成的统计数据
+            architecture: architecture.json 内容
+        
+        Returns:
+            {
+                "workflow_count_match": bool,
+                "trigger_distribution_match": bool,
+                "layer_distribution_complete": bool,
+                "issues": list[str],
+            }
+        """
+        result = {
+            "workflow_count_match": True,
+            "trigger_distribution_match": True,
+            "layer_distribution_complete": True,
+            "issues": [],
+        }
+        
+        # 1. 检查工作流总数
+        actual_count = len(ci_data.get("workflows", {}))
+        stats_count = statistics.get("workflow_count", 0)
+        
+        if actual_count != stats_count:
+            result["workflow_count_match"] = False
+            result["issues"].append(f"工作流数量不一致: 统计={stats_count}, 实际={actual_count}")
+        
+        # 2. 检查触发类型分布
+        stats_triggers = statistics.get("trigger_distribution", {})
+        
+        # 从 ci_data 重新计算触发类型分布
+        actual_triggers = {}
+        for wf in ci_data.get("workflows", {}).values():
+            for trigger in wf.get("triggers", []):
+                actual_triggers[trigger] = actual_triggers.get(trigger, 0) + 1
+        
+        if stats_triggers != actual_triggers:
+            result["trigger_distribution_match"] = False
+            result["issues"].append("触发类型分布不一致")
+        
+        # 3. 检查层级分布是否完整
+        layer_dist = statistics.get("layer_distribution", {})
+        layer_total = sum(layer_dist.values())
+        
+        if layer_total != actual_count:
+            result["layer_distribution_complete"] = False
+            result["issues"].append(f"层级分布合计 ({layer_total}) ≠ 工作流总数 ({actual_count})")
+        
+        return result
+
+    def validate_overview_accuracy(
+        self,
+        overview: str,
+        ci_data: dict
+    ) -> dict:
+        """
+        验证项目概述中的数量准确性
+        
+        检查概述中的工作流数量、Job 数量等是否与实际一致。
+        
+        Args:
+            overview: 项目概述文本
+            ci_data: ci_data.json 内容
+        
+        Returns:
+            {
+                "is_accurate": bool,
+                "workflow_count_in_overview": int,
+                "actual_workflow_count": int,
+                "job_count_in_overview": int,
+                "actual_job_count": int,
+                "corrected_overview": str,
+            }
+        """
+        result = {
+            "is_accurate": True,
+            "workflow_count_in_overview": None,
+            "actual_workflow_count": 0,
+            "job_count_in_overview": None,
+            "actual_job_count": 0,
+            "corrected_overview": overview,
+        }
+        
+        # 实际数量
+        workflows = ci_data.get("workflows", {})
+        result["actual_workflow_count"] = len(workflows)
+        
+        job_count = 0
+        for wf in workflows.values():
+            job_count += len(wf.get("jobs", {}))
+        result["actual_job_count"] = job_count
+        
+        if not overview:
+            return result
+        
+        # 提取概述中的工作流数量
+        workflow_match = re.search(r'工作流总数[：:]\s*(\d+)\s*个', overview)
+        if workflow_match:
+            result["workflow_count_in_overview"] = int(workflow_match.group(1))
+            
+            if result["workflow_count_in_overview"] != result["actual_workflow_count"]:
+                result["is_accurate"] = False
+                result["corrected_overview"] = re.sub(
+                    r'工作流总数[：:]\s*\d+\s*个',
+                    f'工作流总数：{result["actual_workflow_count"]} 个',
+                    overview
+                )
+        
+        # 提取概述中的 Job 数量
+        job_match = re.search(r'Job[续總]数[：:]\s*(\d+)', overview)
+        if job_match:
+            result["job_count_in_overview"] = int(job_match.group(1))
+            
+            if result["job_count_in_overview"] != result["actual_job_count"]:
+                result["is_accurate"] = False
+                result["corrected_overview"] = re.sub(
+                    r'Job[續總]数[：:]\s*\d+',
+                    f'Job总数：{result["actual_job_count"]}',
+                    result["corrected_overview"]
+                )
+        
+        return result

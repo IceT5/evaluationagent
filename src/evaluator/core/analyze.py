@@ -24,9 +24,9 @@ class AnalyzeConfig:
 
 def analyze_project(
     path: str,
-    types: List[str] = None,
-    display_name: str = None,
-    llm_config: Dict[str, Any] = None,
+    types: Optional[List[str]] = None,
+    display_name: Optional[str] = None,
+    llm_config: Optional[Dict[str, Any]] = None,
 ) -> AnalysisResult:
     """
     分析项目
@@ -143,7 +143,7 @@ def analyze_project(
 def _analyze_cicd(
     project_path: Path,
     version_dir: Path,
-    llm_config: Dict[str, Any] = None,
+    llm_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """执行 CI/CD 分析"""
     from evaluator.agents import CICDAgent, ReporterAgent, ReviewerAgent
@@ -153,11 +153,15 @@ def _analyze_cicd(
     try:
         # 初始化 LLM 客户端
         llm = None
-        api_key = llm_config.get("api_key") if llm_config else None
-        if api_key:
-            base_url = llm_config.get("base_url") if llm_config else None
-            model = llm_config.get("model") if llm_config else "glm-4"
-            llm = LLMClient(api_key=api_key, base_url=base_url, model=model)
+        if llm_config:
+            api_key = llm_config.get("api_key")
+            if api_key:
+                kwargs = {"api_key": api_key}
+                if llm_config.get("base_url"):
+                    kwargs["base_url"] = llm_config["base_url"]
+                if llm_config.get("model"):
+                    kwargs["model"] = llm_config["model"]
+                llm = LLMClient(**kwargs)
         
         # 使用 CICDAgent 执行分析
         cicd_agent = CICDAgent(llm=llm)
@@ -224,6 +228,27 @@ def _analyze_cicd(
         
         if html_report_path:
             print(f"  HTML 报告已保存: {html_report_path}")
+        
+        # 验证最终报告
+        print("\n正在验证最终报告...")
+        try:
+            from evaluator.agents import ReviewerAgent
+            reviewer = ReviewerAgent(llm=llm)
+            md_report_path = cicd_analysis.get("report_path", "")
+            validation = reviewer.validate_final_reports(md_report_path, html_report_path or "", _load_ci_data(cicd_analysis.get("ci_data_path", "")))
+            
+            if not validation["valid"]:
+                print("  [WARN] 最终报告验证发现问题:")
+                if validation.get("md_issues"):
+                    for issue in validation["md_issues"]:
+                        print(f"    - Markdown: {issue}")
+                if validation.get("html_issues"):
+                    for issue in validation["html_issues"]:
+                        print(f"    - HTML: {issue}")
+            else:
+                print("  [OK] 最终报告验证通过")
+        except Exception as e:
+            print(f"  [WARN] 最终报告验证失败: {e}")
         
         return {
             "success": True,

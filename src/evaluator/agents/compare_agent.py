@@ -2,7 +2,7 @@
 
 import json
 from pathlib import Path
-from typing import Optional, TypedDict
+from typing import Optional, TypedDict, Any, List, Dict
 
 from storage import StorageManager
 from .compare_dimensions import (
@@ -10,8 +10,14 @@ from .compare_dimensions import (
     DimensionCalculator,
     MetricResult,
     DimensionResult,
-    ComparisonResult,
 )
+from evaluator.core.types import ComparisonResult
+
+try:
+    from evaluator.llm import LLMClient
+    HAS_LLM = True
+except ImportError:
+    HAS_LLM = False
 
 
 class CompareInput(TypedDict):
@@ -23,16 +29,21 @@ class CompareInput(TypedDict):
 
 
 class CompareAgent:
-    def __init__(self, storage_manager: Optional[StorageManager] = None):
+    def __init__(
+        self,
+        storage_manager: Optional[StorageManager] = None,
+        llm: Optional["LLMClient"] = None,
+    ):
         self.storage = storage_manager or StorageManager()
         self.calculator = DimensionCalculator()
+        self.llm = llm
 
     def run(self, input_data: CompareInput) -> dict:
         project_a = input_data["project_a"]
         project_b = input_data["project_b"]
         version_a = input_data.get("version_a")
         version_b = input_data.get("version_b")
-        selected_dimensions = input_data.get("dimensions", list(COMPARE_DIMENSIONS.keys()))
+        selected_dimensions = input_data.get("dimensions") or list(COMPARE_DIMENSIONS.keys())
 
         if not self.storage.project_exists(project_a):
             return {"error": f"Project not found: {project_a}"}
@@ -90,21 +101,50 @@ class CompareAgent:
             dimension_scores["A"] += scores["A"]
             dimension_scores["B"] += scores["B"]
 
-        summary = self._generate_summary(
-            project_a, project_b, dimension_results, dimension_scores, metadata_a, metadata_b
-        )
-        recommendations = self._generate_recommendations(metrics_a, metrics_b, dimension_results)
+        # LLM 分析（如果可用）
+        semantic_diff = None
+        if self.llm and HAS_LLM:
+            try:
+                version_dir_a = str(self.storage._get_version_dir(project_a, version_a))
+                version_dir_b = str(self.storage._get_version_dir(project_b, version_b))
+                semantic_diff = self._analyze_semantic_diff(
+                    project_a, project_b, version_dir_a, version_dir_b
+                )
+                summary = self._generate_summary_with_llm(
+                    project_a, project_b, dimension_results, semantic_diff
+                )
+                recommendations = self._generate_recommendations_with_llm(
+                    project_a, project_b, dimension_results, semantic_diff
+                )
+            except Exception as e:
+                print(f"  [WARN] LLM 分析失败: {e}，使用规则分析")
+                summary = self._generate_summary(
+                    project_a, project_b, dimension_results, dimension_scores, metadata_a, metadata_b
+                )
+                recommendations = self._generate_recommendations(metrics_a, metrics_b, dimension_results)
+        else:
+            summary = self._generate_summary(
+                project_a, project_b, dimension_results, dimension_scores, metadata_a, metadata_b
+            )
+            recommendations = self._generate_recommendations(metrics_a, metrics_b, dimension_results)
+
+        dimensions_dicts = [self._dim_to_dict(d) for d in dimension_results]
 
         comparison_result = ComparisonResult(
+            success=True,
+            comparison_id="",
             project_a=project_a,
             project_b=project_b,
-            dimensions=dimension_results,
+            version_a=metadata_a.get("version_id"),
+            version_b=metadata_b.get("version_id"),
+            dimensions=dimensions_dicts,
+            semantic_diff=semantic_diff,
             summary=summary,
             recommendations=recommendations,
         )
 
-        compare_md = self._generate_compare_markdown(comparison_result, data_a, data_b)
-        compare_html = self._generate_compare_html(comparison_result, data_a, data_b)
+        compare_md = self._generate_compare_markdown(comparison_result, data_a, data_b, dimension_results)
+        compare_html = self._generate_compare_html(comparison_result, data_a, data_b, dimension_results)
 
         comparison_id = self.storage.save_comparison(
             project_a=project_a,
@@ -123,10 +163,203 @@ class CompareAgent:
             "version_a": metadata_a.get("version_id"),
             "version_b": metadata_b.get("version_id"),
             "summary": summary,
-            "dimension_results": [self._dim_to_dict(d) for d in dimension_results],
+            "semantic_diff": semantic_diff,
+            "dimensions": dimensions_dicts,
             "recommendations": recommendations,
             "compare_html": compare_html,
         }
+
+    def _analyze_semantic_diff(
+        self,
+        project_a: str,
+        project_b: str,
+        version_dir_a: str,
+        version_dir_b: str,
+    ) -> str:
+        """使用 LLM 分析架构模式差异"""
+        if not self.llm or not HAS_LLM:
+            return ""
+
+        system_prompt = """你是一个 CI/CD 架构专家，擅长分析 GitHub Actions 工作流的架构设计模式。
+请从以下角度分析：
+1. 工作流设计模式（串行/并行/矩阵等）
+2. 复用策略（Actions、Reusable Workflows、模板）
+3. 依赖管理策略（Caching、依赖预取等）
+4. 部署策略（蓝绿、金丝雀、滚动等）
+5. 安全最佳实践（权限控制、密钥管理）
+6. 可扩展性和可维护性
+
+请用中文回答，使用 Markdown 格式。"""
+
+        dir_a = Path(version_dir_a)
+        dir_b = Path(version_dir_b)
+
+        summary_a = {}
+        summary_b = {}
+        if (dir_a / "analysis_summary.json").exists():
+            with open(dir_a / "analysis_summary.json", "r", encoding="utf-8") as f:
+                summary_a = json.load(f)
+        if (dir_b / "analysis_summary.json").exists():
+            with open(dir_b / "analysis_summary.json", "r", encoding="utf-8") as f:
+                summary_b = json.load(f)
+
+        arch_a = {}
+        arch_b = {}
+        if (dir_a / "architecture.json").exists():
+            with open(dir_a / "architecture.json", "r", encoding="utf-8") as f:
+                arch_a = json.load(f)
+        if (dir_b / "architecture.json").exists():
+            with open(dir_b / "architecture.json", "r", encoding="utf-8") as f:
+                arch_b = json.load(f)
+
+        md_a = ""
+        md_b = ""
+        if (dir_a / "CI_ARCHITECTURE.md").exists():
+            with open(dir_a / "CI_ARCHITECTURE.md", "r", encoding="utf-8") as f:
+                md_a = f.read()[:8000]
+        if (dir_b / "CI_ARCHITECTURE.md").exists():
+            with open(dir_b / "CI_ARCHITECTURE.md", "r", encoding="utf-8") as f:
+                md_b = f.read()[:8000]
+
+        prompt = f"""## 项目 A: {project_a}
+
+### 分析摘要
+```json
+{json.dumps(summary_a, ensure_ascii=False, indent=2)}
+```
+
+### 架构层级
+```json
+{json.dumps(arch_a, ensure_ascii=False, indent=2)}
+```
+
+### Markdown 报告摘要
+```
+{md_a}
+```
+
+---
+
+## 项目 B: {project_b}
+
+### 分析摘要
+```json
+{json.dumps(summary_b, ensure_ascii=False, indent=2)}
+```
+
+### 架构层级
+```json
+{json.dumps(arch_b, ensure_ascii=False, indent=2)}
+```
+
+### Markdown 报告摘要
+```
+{md_b}
+```
+
+---
+
+请分析这两个项目在 CI/CD 架构设计上的主要差异，包括：
+1. 各自的优势架构模式
+2. 存在的架构问题或反模式
+3. 关键的设计选择对比
+
+请用结构化的 Markdown 格式回答。"""
+
+        return self.llm.chat(prompt, system_prompt)
+
+    def _generate_summary_with_llm(
+        self,
+        project_a: str,
+        project_b: str,
+        dimension_results: list,
+        semantic_diff: str,
+    ) -> str:
+        """使用 LLM 生成对比总结"""
+        if not self.llm or not HAS_LLM:
+            return ""
+
+        system_prompt = """你是一个 CI/CD 架构评估专家，擅长总结项目对比结果。
+请基于定量指标和定性分析，生成一份清晰、有见地的对比总结。
+请用中文回答，使用 Markdown 格式。"""
+
+        dimensions_list = [self._dim_to_dict(d) for d in dimension_results]
+        dimensions_str = json.dumps(dimensions_list, ensure_ascii=False, indent=2)
+
+        prompt = f"""## 项目对比
+- 项目 A: {project_a}
+- 项目 B: {project_b}
+
+## 定量维度得分
+```json
+{dimensions_str}
+```
+
+## 架构模式差异分析
+{semantic_diff}
+
+---
+
+请生成一份总结，包括：
+1. 总体评估（哪个项目更好，好在哪里）
+2. 各维度的关键发现
+3. 两个项目的主要差距
+
+请用中文回答。"""
+
+        return self.llm.chat(prompt, system_prompt)
+
+    def _generate_recommendations_with_llm(
+        self,
+        project_a: str,
+        project_b: str,
+        dimension_results: list,
+        semantic_diff: str,
+    ) -> List[str]:
+        """使用 LLM 生成改进建议"""
+        if not self.llm or not HAS_LLM:
+            return []
+
+        system_prompt = """你是一个 CI/CD 架构优化专家，擅长给出可操作的改进建议。
+请根据对比分析，为落后的项目提供具体的改进建议。
+请用中文回答，输出 JSON 数组格式的建议列表。"""
+
+        dimensions_list = [self._dim_to_dict(d) for d in dimension_results]
+        dimensions_str = json.dumps(dimensions_list, ensure_ascii=False, indent=2)
+
+        prompt = f"""## 项目对比
+- 项目 A: {project_a}
+- 项目 B: {project_b}
+
+## 定量维度得分
+```json
+{dimensions_str}
+```
+
+## 架构模式差异分析
+{semantic_diff}
+
+---
+
+请为两个项目分别提供改进建议。输出格式：
+```json
+[
+  {{"project": "{project_a}", "recommendation": "建议内容..."}},
+  {{"project": "{project_b}", "recommendation": "建议内容..."}}
+]
+```
+
+只输出 JSON，不要有其他内容。"""
+
+        try:
+            result = self.llm.chat(prompt, system_prompt)
+            recs = json.loads(result)
+            if isinstance(recs, list):
+                return [f"{r.get('project', 'N/A')}: {r.get('recommendation', '')}" for r in recs[:6]]
+        except Exception:
+            pass
+
+        return []
 
     def _calculate_dimension_score(self, metrics: list[MetricResult]) -> dict:
         score_a = 0
@@ -264,7 +497,7 @@ class CompareAgent:
             "winner": dim.winner,
         }
 
-    def _generate_compare_markdown(self, result: ComparisonResult, data_a: dict, data_b: dict) -> str:
+    def _generate_compare_markdown(self, result: ComparisonResult, data_a: dict, data_b: dict, dimension_results: list) -> str:
         md = f"""# CI/CD 架构对比报告
 
 ## 项目信息
@@ -281,7 +514,7 @@ class CompareAgent:
 ## 详细对比
 
 """
-        for dim in result.dimensions:
+        for dim in dimension_results:
             md += f"### {dim.name}\n\n"
             md += f"| 指标 | {result.project_a} | {result.project_b} | 胜出 |\n"
             md += f"|------|------|------|------|\n"
@@ -298,7 +531,7 @@ class CompareAgent:
 
         return md
 
-    def _generate_compare_html(self, result: ComparisonResult, data_a: dict, data_b: dict) -> str:
+    def _generate_compare_html(self, result: ComparisonResult, data_a: dict, data_b: dict, dimension_results: list) -> str:
         project_info_rows = f"""
             <tr>
                 <td><strong>A</strong></td>
@@ -315,7 +548,7 @@ class CompareAgent:
         """
 
         dimension_cards = ""
-        for dim in result.dimensions:
+        for dim in dimension_results:
             metrics_rows = ""
             for m in dim.metrics:
                 val_a = f"{m.value_a}{m.unit}" if m.value_a is not None else "N/A"

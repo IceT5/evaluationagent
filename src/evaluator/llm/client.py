@@ -4,6 +4,9 @@ from typing import Optional
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage
 
+# 默认模型配置
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "glm-4")
+
 
 class LLMClient:
     """
@@ -16,12 +19,15 @@ class LLMClient:
     def __init__(
         self,
         provider: str = "openai",
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ):
+        # 如果没有指定模型，从环境变量读取
+        if model is None:
+            model = os.getenv("DEFAULT_MODEL", "glm-4")
         """
         初始化 LLM 客户端
         
@@ -53,9 +59,8 @@ class LLMClient:
             "api_key": self.api_key,
             "base_url": self.base_url,
             "temperature": temperature,
+            "request_timeout": 300,
         }
-        
-        # 设置 max_tokens：None 时使用 131072（128K），确保不会被截断
         client_kwargs["max_tokens"] = max_tokens if max_tokens is not None else 131072
         
         self._client = ChatOpenAI(**client_kwargs)

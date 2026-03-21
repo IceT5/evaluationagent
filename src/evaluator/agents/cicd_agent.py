@@ -15,15 +15,16 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 from collections import defaultdict
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from evaluator.llm import LLMClient
 from evaluator.skills import CIAnalyzer
+from .reviewer_agent import ReviewerAgent
 
 
 # 配置常量
 MAX_WORKFLOWS_SINGLE_PROMPT = 10  # 单次调用的最大工作流数量
 MAX_WORKFLOWS_PER_BATCH = 10      # 每批次的最大工作流数量
-MAX_CONCURRENT_LLM_CALLS = 4      # 最大并发 LLM 调用数
+MAX_CONCURRENT_LLM_CALLS = 2      # 最大并发 LLM 调用数（降低以避免 API 限流）
 
 
 class CICDAgent:
@@ -31,10 +32,11 @@ class CICDAgent:
     
     def __init__(
         self,
-        llm: LLMClient = None,
+        llm: Optional[LLMClient] = None,
     ):
         self.llm = llm
         self.ci_analyzer = CIAnalyzer()
+        self.reviewer = ReviewerAgent(llm=llm)
     
     def run(self, state: dict) -> dict:
         """执行 CI/CD 分析"""
@@ -89,7 +91,7 @@ class CICDAgent:
         
         try:
             # Step 1: 提取 CI/CD 数据
-            print("\n[Step 1/6] 提取 CI/CD 数据...")
+            print("\n[Step 1/8] 提取 CI/CD 数据...")
             ci_data_path = str(output_dir / "ci_data.json")
             ci_data = self.ci_analyzer.extract_data(project_path, ci_data_path)
             
@@ -117,7 +119,7 @@ class CICDAgent:
                 self.llm = get_default_client()
             
             # Step 2: 检查工作流数量，决定处理策略
-            print("\n[Step 2/6] 确定处理策略...")
+            print("\n[Step 2/8] 确定处理策略...")
             
             # 根据模式选择不同的分析策略
             if retry_mode == "retry":
@@ -139,12 +141,14 @@ class CICDAgent:
                 print(f"  工作流数量 > {MAX_WORKFLOWS_SINGLE_PROMPT}，使用分割并发模式")
                 llm_response = self._parallel_analysis(ci_data, output_dir, workflows_count, ci_data_path)
             
-            # Step 4.5: 检视 LLM 响应
-            print("\n[Step 4.5/8] 检视 LLM 响应...")
+            print("  (Step 3-4 完成)")
+            
+            # Step 5: 检视 LLM 响应
+            print("\n[Step 5/8] 检视 LLM 响应...")
             llm_response = self._validate_and_supplement(llm_response, ci_data, output_dir)
             
             # Step 4.6: 从 LLM 响应提取架构图 JSON（用于阶段组织）
-            print("\n[Step 4.6/8] 提取架构图数据用于阶段组织...")
+            print("\n[Step 6/8] 提取架构图数据用于阶段组织...")
             architecture_json_path = str(output_dir / "architecture.json")
             self._extract_and_save_json(
                 llm_response,
@@ -154,37 +158,46 @@ class CICDAgent:
             )
             architecture_data = self._load_architecture_json(architecture_json_path)
             
+            # Step 5: 修正触发入口层（确保触发类型与 ci_data 一致）
+            print("\n  [修正] 验证并补充架构数据...")
+            architecture_data = self._fix_trigger_layer(architecture_data, ci_data)
+            
+            # Step 5.5: 验证架构完整性，补充遗漏的工作流
+            validation_result = self.reviewer.validate_architecture_completeness(ci_data, architecture_data)
+            if not validation_result["is_complete"]:
+                print(f"  [WARN] 架构不完整:")
+                if validation_result["missing_workflows"]:
+                    print(f"    遗漏工作流: {len(validation_result['missing_workflows'])} 个")
+                    print(f"    包括: {', '.join(validation_result['missing_workflows'][:5])}...")
+                if validation_result["missing_trigger_types"]:
+                    print(f"    遗漏触发类型: {', '.join(validation_result['missing_trigger_types'])}")
+                
+                architecture_data = self._supplement_architecture(
+                    architecture_data, ci_data, validation_result
+                )
+                # 保存补充后的 architecture.json
+                with open(architecture_json_path, "w", encoding="utf-8") as f:
+                    json.dump(architecture_data, f, ensure_ascii=False, indent=2)
+                print("  [OK] 架构已补充完成")
+            
             # Step 4.7: 检视并重新组织阶段
-            print("\n[Step 4.7/8] 检视阶段划分...")
+            print("\n[Step 6.5/8] 检视阶段划分...")
             llm_response = self._organize_stages(llm_response, architecture_data, ci_data)
             
+            # Step 5.5: 验证并修正项目概述中的数量
+            overview_match = re.search(r'^##\s+项目概述\s*$(.*?)(?=^##\s+)', llm_response, re.MULTILINE | re.DOTALL)
+            if overview_match:
+                overview = f"## 项目概述{overview_match.group(1)}"
+                overview_validation = self.reviewer.validate_overview_accuracy(overview, ci_data)
+                if not overview_validation["is_accurate"]:
+                    print(f"  [WARN] 概述中工作流数量错误: {overview_validation['workflow_count_in_overview']} → {overview_validation['actual_workflow_count']}")
+                    corrected_overview = overview_validation["corrected_overview"]
+                    llm_response = llm_response[:overview_match.start()] + corrected_overview + llm_response[overview_match.end():]
+            
             # Step 5: 生成最终报告
-            print("\n[Step 5/8] 生成最终报告...")
+            print("\n[Step 7/8] 生成最终报告...")
             report_path = str(output_dir / "CI_ARCHITECTURE.md")
             self.ci_analyzer.generate_report(ci_data_path, llm_response, report_path)
-            
-            # Step 5.5: 验证最终报告（新增）
-            print("\n[Step 5.5/8] 验证最终报告...")
-            try:
-                with open(report_path, 'r', encoding='utf-8') as f:
-                    final_report = f.read()
-                
-                from evaluator.agents import ReviewerAgent
-                reviewer = ReviewerAgent(llm=self.llm)
-                final_validation = reviewer.validate_llm_response(final_report, ci_data)
-                
-                if not final_validation["valid"]:
-                    print("  [WARN] 最终报告验证发现问题:")
-                    if final_validation.get("missing_sections"):
-                        print(f"    - 缺失章节: {final_validation['missing_sections']}")
-                    if final_validation.get("missing_json"):
-                        print(f"    - 缺失 JSON: {final_validation['missing_json']}")
-                    if final_validation.get("missing_workflows"):
-                        print(f"    - 缺失工作流: {final_validation['missing_workflows']}")
-                else:
-                    print("  [OK] 最终报告验证通过")
-            except Exception as e:
-                print(f"  [ERROR] 最终报告验证失败: {e}")
             
             # Step 8: 生成分析摘要 JSON
             print("\n[Step 8/8] 生成分析摘要...")
@@ -230,12 +243,12 @@ class CICDAgent:
     def _single_call_analysis(self, ci_data: dict, output_dir: Path) -> str:
         """中小型项目：单次 LLM 调用"""
         # Step 3: 生成单个 Prompt
-        print("\n[Step 3/6] 生成分析 Prompt...")
+        print("  [3/8] 生成分析 Prompt...")
         prompt_path = str(output_dir / "prompt.txt")
         prompt = self.ci_analyzer.generate_prompt(ci_data, prompt_path)
         
         # Step 4: 单次 LLM 调用
-        print("\n[Step 4/6] 调用 LLM 分析...")
+        print("  [4/8] 调用 LLM 分析...")
         llm_response = self.llm.chat(prompt)
         print(f"  LLM 分析完成 ({len(llm_response)} 字符)")
         
@@ -249,7 +262,7 @@ class CICDAgent:
         """大型项目：分割 prompt + 并发调用 + 合并结果"""
         
         # Step 3: 生成分割的 Prompt 文件
-        print("\n[Step 3/6] 生成分割 Prompt...")
+        print("  [3/8] 生成分割 Prompt...")
         prompts_dir = output_dir / "prompts"
         prompts_dir.mkdir(exist_ok=True)
         
@@ -261,11 +274,11 @@ class CICDAgent:
         print(f"  生成了 {len(prompt_files)} 个 prompt 文件")
         
         # Step 4: 并发调用 LLM
-        print("\n[Step 4/6] 并发调用 LLM 分析...")
+        print("  [4/8] 并发调用 LLM 分析...")
         responses = self._parallel_llm_calls(prompt_files)
         
         # 合并结果
-        print("\n[Step 4.5/6] 合并 LLM 响应...")
+        print("  [4.5/8] 合并 LLM 响应...")
         merged_response = self._merge_responses(responses, ci_data, ci_data_path)
         print(f"  合并完成 ({len(merged_response)} 字符)")
         
@@ -305,17 +318,22 @@ class CICDAgent:
                     result = future.result(timeout=600)  # 10分钟超时
                     results.append(result)
                 except Exception as e:
+                    import traceback
+                    tb = traceback.format_exc()
                     print(f"  [WARN] 任务失败: {e}")
+                    print(f"  [WARN] 详细错误:\n{tb}")
                     results.append({
                         'success': False,
-                        'error': str(e)
+                        'error': str(e),
+                        'traceback': tb
                     })
         
         return results
     
     def _call_llm_with_retry(self, prompt: str, prompt_path: str, index: int, total: int) -> Dict[str, Any]:
         """带重试的 LLM 调用"""
-        max_retries = 3
+        import time
+        max_retries = 5
         for attempt in range(max_retries):
             try:
                 print(f"  [{index}/{total}] 正在处理 {Path(prompt_path).name}...")
@@ -329,11 +347,13 @@ class CICDAgent:
                 }
             except Exception as e:
                 if attempt < max_retries - 1:
-                    print(f"  [{index}/{total}] 失败，重试 {attempt + 2}/{max_retries}...")
-                    import time
-                    time.sleep(5)
+                    delay = 10 * (attempt + 1)
+                    print(f"  [{index}/{total}] 失败，{delay}s 后重试 {attempt + 2}/{max_retries}...")
+                    time.sleep(delay)
                 else:
                     raise e
+        
+        return {'success': False, 'error': 'max retries exceeded'}
     
     def _merge_responses(self, responses: List[Dict[str, Any]], ci_data: dict, ci_data_path: str = "") -> str:
         """合并多个 LLM 响应"""
@@ -343,10 +363,17 @@ class CICDAgent:
         failed = [r for r in responses if not r.get('success')]
         
         if failed:
-            print(f"  [WARN] {len(failed)} 个任务失败")
+            print(f"  [WARN] {len(failed)} 个任务失败:")
+            for f in failed:
+                name = Path(f.get('prompt_path', 'unknown')).name
+                print(f"    - {name}: {f.get('error', 'unknown')}")
         
         if not successful:
-            raise RuntimeError("所有 LLM 调用都失败了")
+            print("\n[ERROR] 所有任务都失败，详细信息:")
+            for f in failed:
+                if f.get('traceback'):
+                    print(f['traceback'])
+            raise RuntimeError(f"所有 {len(failed)} 个 LLM 调用都失败")
         
         # 按 index 排序
         successful.sort(key=lambda x: x.get('index', 0))
@@ -799,7 +826,7 @@ class CICDAgent:
         ci_data: dict, 
         output_dir: Path, 
         issues: list,
-        existing_report: str
+        existing_report: Optional[str] = None
     ) -> str:
         """重做模式：根据问题修正报告"""
         
@@ -853,7 +880,7 @@ class CICDAgent:
         ci_data: dict, 
         output_dir: Path, 
         issues: list,
-        existing_report: str
+        existing_report: Optional[str] = None
     ) -> str:
         """补充模式：基于现有报告补充缺失内容"""
         
@@ -1141,7 +1168,7 @@ class CICDAgent:
         llm_response: str,
         marker: str,
         output_path: str,
-        default: dict = None,
+        default: Optional[dict] = None,
     ) -> bool:
         """从 LLM 响应中提取 JSON 并保存
 
@@ -1283,10 +1310,13 @@ class CICDAgent:
         if findings_match:
             organized.append(f"## 关键发现和建议{findings_match.group(1)}")
         
-        # 6. 附录
+        # 6. 附录（排除脚本目录索引，因为会单独生成）
         appendix_match = re.search(r'^##\s+附录\s*$(.*)', llm_response, re.MULTILINE | re.DOTALL)
         if appendix_match:
-            organized.append(f"## 附录{appendix_match.group(1)}")
+            appendix_content = appendix_match.group(1)
+            # 移除脚本目录索引（因为会单独生成）
+            appendix_content = re.sub(r'\n##\s+脚本目录索引.*', '', appendix_content, flags=re.DOTALL)
+            organized.append(f"## 附录{appendix_content}")
         
         # 7. ARCHITECTURE_JSON
         json_match = re.search(r'<!--\s*ARCHITECTURE_JSON\s*(.*?)\s*ARCHITECTURE_JSON\s*-->', llm_response, re.DOTALL)
@@ -1378,3 +1408,146 @@ class CICDAgent:
                 if job.get("uses", "").startswith(":"):
                     return True
         return False
+
+    def _fix_trigger_layer(self, architecture: dict, ci_data: dict) -> dict:
+        """
+        根据 ci_data 修正触发入口层
+        
+        确保触发入口层的节点与 ci_data 中的触发类型完全一致。
+        
+        Args:
+            architecture: architecture.json 内容
+            ci_data: ci_data.json 内容
+        
+        Returns:
+            修正后的 architecture
+        """
+        # 从 ci_data 提取所有触发类型及其数量
+        trigger_counts = {}
+        for wf_name, wf in ci_data.get("workflows", {}).items():
+            for trigger in wf.get("triggers", []):
+                if trigger not in trigger_counts:
+                    trigger_counts[trigger] = 0
+                trigger_counts[trigger] += 1
+        
+        # 找到触发入口层
+        trigger_layer = None
+        trigger_layer_index = -1
+        for i, layer in enumerate(architecture.get("layers", [])):
+            if "触发" in layer.get("name", "") or "入口" in layer.get("name", ""):
+                trigger_layer = layer
+                trigger_layer_index = i
+                break
+        
+        if trigger_layer is None:
+            # 没有找到触发入口层，创建一个
+            trigger_layer = {
+                "id": "layer-trigger",
+                "name": "触发入口层",
+                "nodes": []
+            }
+            architecture.setdefault("layers", [])
+            architecture["layers"].insert(0, trigger_layer)
+            trigger_layer_index = 0
+        
+        # 重建触发入口层节点
+        trigger_layer["nodes"] = []
+        for trigger, count in sorted(trigger_counts.items()):
+            node_id = f"node-trigger-{trigger}"
+            label = f"{trigger}"
+            if count > 1:
+                label = f"{trigger} ({count})"
+            
+            description = self._get_trigger_description(trigger, count)
+            
+            trigger_layer["nodes"].append({
+                "id": node_id,
+                "label": label,
+                "description": description,
+                "detail_section": "阶段一：触发入口"
+            })
+        
+        return architecture
+
+    def _get_trigger_description(self, trigger: str, count: int) -> str:
+        """获取触发类型的描述"""
+        descriptions = {
+            "push": "代码推送触发",
+            "pull_request": "Pull Request 事件触发",
+            "pull_request_target": "PR 目标分支事件触发",
+            "pull_request_review_comment": "PR 审查评论触发",
+            "schedule": "定时任务触发",
+            "workflow_dispatch": "手动触发",
+            "workflow_call": "工作流调用触发",
+            "issues": "Issue 事件触发",
+            "issue_comment": "Issue 评论触发",
+            "create": "分支/标签创建触发",
+            "delete": "分支/标签删除触发",
+            "repository_dispatch": "仓库派发触发",
+        }
+        base = descriptions.get(trigger, f"{trigger} 事件触发")
+        if count > 1:
+            return f"{base}，{count} 个工作流使用"
+        return base
+
+    def _supplement_architecture(
+        self,
+        architecture: dict,
+        ci_data: dict,
+        validation_result: dict
+    ) -> dict:
+        """
+        补充架构中遗漏的工作流
+        
+        将遗漏的工作流添加到 "辅助工作流" 层。
+        
+        Args:
+            architecture: architecture.json 内容
+            ci_data: ci_data.json 内容
+            validation_result: validate_architecture_completeness() 返回的结果
+        
+        Returns:
+            补充后的 architecture
+        """
+        missing_workflows = validation_result.get("missing_workflows", [])
+        if not missing_workflows:
+            return architecture
+        
+        # 获取现有层级的最大编号
+        max_layer_id = 0
+        for layer in architecture.get("layers", []):
+            layer_id = layer.get("id", "layer-0")
+            if layer_id.startswith("layer-"):
+                try:
+                    num = int(layer_id.replace("layer-", ""))
+                    max_layer_id = max(max_layer_id, num)
+                except ValueError:
+                    pass
+        
+        # 创建辅助工作流层
+        auxiliary_layer = {
+            "id": f"layer-{max_layer_id + 1}",
+            "name": "辅助工作流",
+            "nodes": []
+        }
+        
+        # 为每个遗漏的工作流创建节点
+        for wf_name in missing_workflows:
+            wf_data = ci_data.get("workflows", {}).get(wf_name, {})
+            job_count = len(wf_data.get("jobs", {}))
+            triggers = wf_data.get("triggers", [])
+            
+            node = {
+                "id": f"node-aux-{wf_name.replace('.yml', '')}",
+                "label": wf_name,
+                "description": f"辅助工作流，{job_count} 个 Job",
+                "detail_section": "辅助工作流",
+                "triggers": triggers,
+            }
+            auxiliary_layer["nodes"].append(node)
+        
+        # 添加到架构中
+        architecture.setdefault("layers", [])
+        architecture["layers"].append(auxiliary_layer)
+        
+        return architecture

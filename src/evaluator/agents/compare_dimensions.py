@@ -80,16 +80,7 @@ class DimensionResult:
             return "A"
         elif self.score_b > self.score_a:
             return "B"
-        return "tie"
-
-
-@dataclass
-class ComparisonResult:
-    project_a: str
-    project_b: str
-    dimensions: list[DimensionResult]
-    summary: str
-    recommendations: list[str]
+            return "tie"
 
 
 class DimensionCalculator:

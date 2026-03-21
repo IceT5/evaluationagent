@@ -157,14 +157,14 @@ class ReporterAgent:
     
     def _extract_appendix(self, content: str) -> str:
         """提取附录"""
-        match = re.search(r'^##\s+附录\s*$(.*)', content, re.MULTILINE | re.DOTALL)
+        match = re.search(r'^##\s+附录\s*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
         if match:
             return f"## 附录{match.group(1)}"
         return ""
     
     def _extract_findings(self, content: str) -> str:
         """提取关键发现和建议"""
-        match = re.search(r'^##\s+.*发现.*建议\s*$(.*?)(?=^##\s+)', content, re.MULTILINE | re.DOTALL)
+        match = re.search(r'^##\s+.*发现.*建议\s*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
         if match:
             return f"## 关键发现和建议{match.group(1)}"
         return ""
@@ -312,11 +312,22 @@ class ReporterAgent:
         for layer in layers:
             layer_name = layer.get("name", "未知")
             nodes = layer.get("nodes", [])
-            workflow_nodes = [n for n in nodes if n.get("label", "").endswith(".yml")]
             
-            # 只统计有工作流的层（跳过触发入口层）
+            # "辅助工作流" 层：统计所有节点
+            if layer_name == "辅助工作流":
+                workflow_nodes = nodes
+            else:
+                # 其他层：只统计 .yml 结尾的工作流节点
+                workflow_nodes = [n for n in nodes if n.get("label", "").endswith(".yml")]
+            
+            # 只统计有工作流的层
             if workflow_nodes:
                 stats["layer_distribution"][layer_name] = len(workflow_nodes)
+        
+        # 一致性校验
+        layer_total = sum(stats["layer_distribution"].values())
+        if layer_total != stats["workflow_count"]:
+            print(f"  [WARN] 层级分布合计 ({layer_total}) ≠ 工作流总数 ({stats['workflow_count']})")
         
         return stats
     

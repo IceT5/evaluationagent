@@ -5,9 +5,10 @@
 ## 功能特性
 
 - **CI/CD 架构分析**：自动提取并分析 GitHub Actions、GitLab CI 等工作流配置
+- **智能报告生成**：生成 Markdown 和交互式 HTML 报告，包含架构图、阶段分析、脚本索引等
 - **项目对比**：使用 LLM 对多个项目的 CI/CD 架构进行智能对比分析
 - **持久化存储**：支持项目版本管理和历史记录
-- **交互式 CLI**：友好的命令行界面，支持命令补全
+- **交互式 CLI**：友好的命令行界面，输入 `/` 显示命令列表
 - **可扩展架构**：基于 LangGraph 的 Agent 编排框架，便于扩展
 
 ## 架构
@@ -104,7 +105,7 @@ USE_RICH=true
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
-| `OPENAI_API_KEY` | LLM API Key | - |
+| `OPENAI_API_KEY` | LLM API Key（必需） | - |
 | `OPENAI_BASE_URL` | API 地址 | https://api.openai.com/v1 |
 | `DEFAULT_MODEL` | 默认模型 | gpt-4o-mini |
 | `MAX_TOKENS` | 最大 token 数 | 4096 |
@@ -123,6 +124,8 @@ USE_RICH=true
 ## 使用
 
 ### 运行 CLI
+
+启动后进入交互式界面，输入 `/` 可查看所有可用命令。命令必须以 `/` 开头。
 
 ```bash
 eval-agent
@@ -214,11 +217,14 @@ python -m evaluator.cli.app
 
 ```
 data/projects/{name}/{version}/
-├── metadata.json        # 元数据
-├── ci_data.json         # CI 原始数据
-├── report.md            # Markdown 报告
-├── report.html          # HTML 报告
-└── architecture.json    # 架构图数据
+├── metadata.json           # 项目元数据
+├── ci_data.json            # CI 原始数据（工作流、脚本、外部系统等）
+├── llm_response.md         # LLM 原始响应
+├── CI_ARCHITECTURE.md      # Markdown 分析报告
+├── report.html             # 交互式 HTML 报告
+├── architecture.json       # 架构图数据（用于可视化）
+├── analysis_summary.json   # 分析摘要
+└── prompts/               # 发送给 LLM 的提示词
 ```
 
 ### 对比结果
@@ -259,18 +265,21 @@ pytest tests/
 ```bash
 pip install pyinstaller
 
-# Windows
-pyinstaller --onefile --name eval-agent src/evaluator/main.py
-
-# macOS/Linux
-pyinstaller --onefile --name eval-agent src/evaluator/main.py
+# 打包 Windows 可执行文件
+pyinstaller eval-agent.exe.spec
 ```
+
+打包后的文件位于 `dist/eval-agent/eval-agent.exe`。
 
 ### 独立二进制注意事项
 
 1. 打包后确保 `.env` 文件位于正确位置
-2. Windows 下运行 `eval-agent.exe`
-3. 可设置 `EVALUATOR_ENV_FILE` 环境变量指定配置文件路径
+2. Windows 下运行 `dist/eval-agent/eval-agent.exe`
+3. Windows Git Bash 环境下需要使用 `winpty` 运行：
+   ```bash
+   winpty dist/eval-agent/eval-agent.exe
+   ```
+4. 可设置 `EVALUATOR_ENV_FILE` 环境变量指定配置文件路径
 
 ## License
 

@@ -25,22 +25,53 @@ from evaluator.core import (
     get_storage_info,
 )
 from evaluator.core.types import AnalysisResult, ComparisonResult, ProjectInfo
+from storage import StorageManager
+
+
+from prompt_toolkit.completion import Completer, Completion
+
+
+class CommandCompleter(Completer):
+    """命令补全器 - 只有输入 / 时才显示命令列表"""
+    
+    def __init__(self, commands: List[str]):
+        super().__init__()
+        self.commands = commands
+    
+    def get_completions(self, document, complete_event):
+        text = document.text_before_cursor
+        
+        # 只有以 / 开头时才提供补全
+        if text.startswith('/'):
+            word = text[1:]  # 去掉 /
+            for cmd in self.commands:
+                if cmd.startswith(word):
+                    yield Completion(
+                        text='/' + cmd,
+                        start_position=-len(text),
+                        display='/' + cmd,
+                    )
+    
+    async def get_completions_async(self, document, complete_event):
+        """异步方法（新版本 prompt_toolkit）"""
+        for completion in self.get_completions(document, complete_event):
+            yield completion
 
 
 class CommandParser:
     """命令解析器"""
     
     COMMANDS = {
-        "analyze": r"^/?analyze(?:\s+(?P<type>\w+))?(?:\s+(?P<path>.+))?$",
-        "compare": r"^/?compare(?:\s+(?P<project_a>.+?))?(?:\s+(?P<project_b>.+?))?(?:\s+--dim(?:\s+(?P<dimensions>.+)))?$",
-        "list": r"^/?list(?:\s+--all)?$",
-        "show": r"^/?show(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
-        "delete": r"^/?delete(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
-        "analyzers": r"^/?analyzers$",
-        "help": r"^/?help(?:\s+(?P<topic>.+))?$",
-        "version": r"^/?version$",
-        "quit": r"^/?(?:quit|exit)$",
-        "clear": r"^/?clear$",
+        "analyze": r"^/analyze(?:\s+(?P<type>\w+))?(?:\s+(?P<path>.+))?$",
+        "compare": r"^/compare(?:\s+(?P<project_a>.+?))?(?:\s+(?P<project_b>.+?))?(?:\s+--dim(?:\s+(?P<dimensions>.+)))?$",
+        "list": r"^/list(?:\s+--all)?$",
+        "show": r"^/show(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
+        "delete": r"^/delete(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
+        "analyzers": r"^/analyzers$",
+        "help": r"^/help(?:\s+(?P<topic>.+))?$",
+        "version": r"^/version$",
+        "quit": r"^/(?:quit|exit)$",
+        "clear": r"^/clear$",
     }
     
     @classmethod
@@ -51,7 +82,7 @@ class CommandParser:
         if not line:
             return None, {}
         
-        # 匹配命令
+        # 匹配命令（必须以 / 开头）
         for cmd, pattern in cls.COMMANDS.items():
             match = re.match(pattern, line, re.IGNORECASE)
             if match:
@@ -63,7 +94,7 @@ class CommandParser:
 class CommandHandler:
     """命令处理器"""
     
-    VERSION = "1.0.0"
+    VERSION = "0.1.0"
     
     def __init__(self, output_func=None):
         self.output_func = output_func or print
@@ -118,7 +149,6 @@ class CommandHandler:
             llm_config = {
                 "api_key": api_key,
                 "base_url": os.getenv("OPENAI_BASE_URL"),
-                "model": os.getenv("DEFAULT_MODEL", "glm-4"),
             }
         
         self.output_func(f"\n开始分析: {project_path.name}")
@@ -174,11 +204,11 @@ class CommandHandler:
             llm_config = {
                 "api_key": api_key,
                 "base_url": os.getenv("OPENAI_BASE_URL"),
-                "model": os.getenv("DEFAULT_MODEL", "glm-4"),
             }
         else:
             self.output_func("  警 未配置 LLM API Key，将使用规则分析")
-        
+
+        storage = StorageManager()
         result = compare_projects(
             project_a=project_a,
             project_b=project_b,
@@ -212,6 +242,11 @@ class CommandHandler:
                 self.output_func("\n建议:")
                 for i, rec in enumerate(result.recommendations[:5], 1):
                     self.output_func(f"  {i}. {rec}")
+
+            comp_dir = storage.data_dir / "comparisons" / result.comparison_id
+            self.output_func(f"\n报告已保存:")
+            self.output_func(f"  Markdown: {comp_dir / 'compare.md'}")
+            self.output_func(f"  HTML:     {comp_dir / 'compare.html'}")
         else:
             self.output_func(f"\n[FAIL] 对比失败")
             self.output_func(f"  {result.summary}")
@@ -414,18 +449,15 @@ def run_cli():
     try:
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import InMemoryHistory
-        from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
-        from prompt_toolkit.completion import WordCompleter
         
-        # 命令补全
+        # 命令补全（只有输入 / 时才显示）
         commands = ["analyze", "compare", "list", "show", "delete", "analyzers", "help", "version", "quit", "exit", "clear"]
-        completer = WordCompleter(commands, ignore_case=True)
+        completer = CommandCompleter(commands)
         
         session = PromptSession(
             "eval-agent> ",
             completer=completer,
             history=InMemoryHistory(),
-            auto_suggest=AutoSuggestFromHistory(),
         )
         
         handler = CommandHandler()
@@ -434,6 +466,7 @@ def run_cli():
 ╭──────────────────────────────────────────────────────────────╮
 │  eval-agent v1.0.0 - CI/CD 架构评估工具                        │
 ╰──────────────────────────────────────────────────────────────╯
+输入 / 查看所有命令
 """)
         
         while True:
@@ -447,6 +480,10 @@ def run_cli():
             command, args = parser.parse(text)
             
             if not command:
+                # 不是命令，显示提示
+                if text.strip():
+                    print(f"未知输入: {text}")
+                    print("输入 / 查看所有命令")
                 continue
             
             should_quit = handler.handle(command, args)
@@ -469,6 +506,7 @@ def run_cli_simple():
 ╭──────────────────────────────────────────────────────────────╮
 │  eval-agent v1.0.0 - CI/CD 架构评估工具                        │
 ╰──────────────────────────────────────────────────────────────╯
+输入 / 查看所有命令
 """)
     
     while True:
@@ -482,6 +520,10 @@ def run_cli_simple():
         command, args = parser.parse(text)
         
         if not command:
+            # 不是命令，显示提示
+            if text:
+                print(f"未知输入: {text}")
+                print("输入 / 查看所有命令")
             continue
         
         should_quit = handler.handle(command, args)

@@ -77,7 +77,7 @@ def get_project(name: str, version: str = None) -> Optional[ProjectDetail]:
     )
 
 
-def delete_project(name: str, version: str = None) -> bool:
+def delete_project(name: str, version: Optional[str] = None) -> bool:
     """删除项目或指定版本"""
     storage = _get_storage()
     return storage.delete_project(name, version)
