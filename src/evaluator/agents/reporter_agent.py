@@ -5,11 +5,23 @@ from pathlib import Path
 from typing import Optional, Dict, List, Any
 
 from storage import StorageManager
+from .base_agent import BaseAgent, AgentMeta
 
 
-class ReporterAgent:
+class ReporterAgent(BaseAgent):
     """报告生成 Agent"""
-    
+
+    @classmethod
+    def describe(cls) -> AgentMeta:
+        return AgentMeta(
+            name="ReporterAgent",
+            description="将 Markdown 报告转换为交互式 HTML 报告",
+            category="output",
+            inputs=["cicd_analysis", "project_name", "review_result", "corrected_report"],
+            outputs=["html_report", "report_path"],
+            dependencies=["ReviewerAgent"],
+        )
+
     LAYER_COLORS = [
         ("#3498db", "rgba(52, 152, 219, 0.15)"),
         ("#2ecc71", "rgba(46, 204, 113, 0.15)"),
@@ -18,23 +30,23 @@ class ReporterAgent:
         ("#1abc9c", "rgba(26, 188, 156, 0.15)"),
         ("#e74c3c", "rgba(231, 76, 60, 0.15)"),
     ]
-    
+
     def __init__(self, storage_manager: Optional[StorageManager] = None):
+        super().__init__()
         self.storage = storage_manager or StorageManager()
     
-    def run(self, state: dict) -> dict:
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         cicd_analysis = state.get("cicd_analysis") or {}
         project_name = state.get("project_name") or "unknown"
         project_path = state.get("project_path") or ""
         storage_dir = state.get("storage_dir")
         storage_version_id = state.get("storage_version_id")
+        errors = state.get("errors", [])
         
-        # 获取 Reviewer 阶段的验证结果
         review_result = state.get("review_result")
         review_issues = state.get("review_issues", [])
         review_retry_count = state.get("review_retry_count", 0)
         
-        # 确定数据来源目录
         if storage_dir and Path(storage_dir).exists():
             data_dir = Path(storage_dir)
             print(f"  使用持久化存储: {data_dir}")
@@ -56,17 +68,17 @@ class ReporterAgent:
         if not Path(md_path).exists():
             print(f"\n⚠️ 未找到 Markdown 报告: {md_path}")
             return {
+                **state,
                 "current_step": "reporter",
                 "html_report": None,
                 "report_path": None,
-                "errors": ["未找到 Markdown 报告"],
+                "errors": errors + ["未找到 Markdown 报告"],
             }
         
         print(f"\n{'='*50}")
         print("  报告生成")
         print(f"{'='*50}")
         
-        # 如果有小错误已修正，使用修正后的报告
         corrected_report = state.get("corrected_report")
         md_content = corrected_report if corrected_report else Path(md_path).read_text(encoding="utf-8")
         
@@ -88,12 +100,10 @@ class ReporterAgent:
         scripts_section = self._generate_scripts_section(ci_data_path)
         statistics = self._generate_statistics(architecture_data, workflow_details, ci_data_path)
         
-        # 生成验证记录摘要
         review_summary = self._generate_review_summary(
             review_result, review_issues, review_retry_count
         )
         
-        # 如果有验证记录，添加到附录开头
         if review_summary:
             appendix = review_summary + "\n\n" + appendix
         
@@ -113,11 +123,9 @@ class ReporterAgent:
         
         print("\n[3/3] 保存报告...")
         
-        # 保存到持久化存储
         html_path = data_dir / "report.html"
         html_path.write_text(html_content, encoding="utf-8")
         
-        # 更新 latest 软链接
         if storage_version_id:
             project_meta = self.storage.get_project_metadata(project_name)
             if project_meta:
@@ -132,10 +140,10 @@ class ReporterAgent:
         self._open_browser(html_path)
         
         return {
+            **state,
             "current_step": "reporter",
             "html_report": str(html_path),
             "report_path": str(html_path),
-            "errors": [],
         }
     
     def _load_architecture_json(self, json_path: str) -> dict:

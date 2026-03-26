@@ -12,6 +12,7 @@ from .compare_dimensions import (
     DimensionResult,
 )
 from evaluator.core.types import ComparisonResult
+from .base_agent import BaseAgent, AgentMeta
 
 try:
     from evaluator.llm import LLMClient
@@ -28,35 +29,71 @@ class CompareInput(TypedDict):
     dimensions: Optional[list[str]]
 
 
-class CompareAgent:
+class CompareAgent(BaseAgent):
+
+    @classmethod
+    def describe(cls) -> AgentMeta:
+        return AgentMeta(
+            name="CompareAgent",
+            description="对比两个已分析项目的 CI/CD 架构",
+            category="analysis",
+            inputs=["project_a", "project_b", "dimensions"],
+            outputs=["comparison_result", "comparison_dir"],
+            dependencies=[],
+        )
+    
     def __init__(
         self,
         storage_manager: Optional[StorageManager] = None,
         llm: Optional["LLMClient"] = None,
     ):
+        super().__init__()
         self.storage = storage_manager or StorageManager()
         self.calculator = DimensionCalculator()
         self.llm = llm
 
-    def run(self, input_data: CompareInput) -> dict:
-        project_a = input_data["project_a"]
-        project_b = input_data["project_b"]
-        version_a = input_data.get("version_a")
-        version_b = input_data.get("version_b")
-        selected_dimensions = input_data.get("dimensions") or list(COMPARE_DIMENSIONS.keys())
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        project_a = state.get("project_a")
+        project_b = state.get("project_b")
+        version_a = state.get("version_a")
+        version_b = state.get("version_b")
+        selected_dimensions = state.get("dimensions") or list(COMPARE_DIMENSIONS.keys())
+
+        if not project_a or not project_b:
+            return {
+                **state,
+                "errors": state.get("errors", []) + ["缺少对比项目参数"],
+                "comparison_result": None,
+            }
 
         if not self.storage.project_exists(project_a):
-            return {"error": f"Project not found: {project_a}"}
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"Project not found: {project_a}"],
+                "comparison_result": None,
+            }
         if not self.storage.project_exists(project_b):
-            return {"error": f"Project not found: {project_b}"}
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"Project not found: {project_b}"],
+                "comparison_result": None,
+            }
 
         data_a = self.storage.load_project(project_a, version_a)
         data_b = self.storage.load_project(project_b, version_b)
 
         if not data_a:
-            return {"error": f"Failed to load {project_a}"}
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"Failed to load {project_a}"],
+                "comparison_result": None,
+            }
         if not data_b:
-            return {"error": f"Failed to load {project_b}"}
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"Failed to load {project_b}"],
+                "comparison_result": None,
+            }
 
         ci_data_a = data_a.get("ci_data", {})
         ci_data_b = data_b.get("ci_data", {})
@@ -105,8 +142,8 @@ class CompareAgent:
         semantic_diff = None
         if self.llm and HAS_LLM:
             try:
-                version_dir_a = str(self.storage._get_version_dir(project_a, version_a))
-                version_dir_b = str(self.storage._get_version_dir(project_b, version_b))
+                version_dir_a = self.storage.get_version_dir(project_a, version_a)
+                version_dir_b = self.storage.get_version_dir(project_b, version_b)
                 semantic_diff = self._analyze_semantic_diff(
                     project_a, project_b, version_dir_a, version_dir_b
                 )
@@ -156,17 +193,23 @@ class CompareAgent:
             dimensions=selected_dimensions,
         )
 
+        comparison_dir = str(self.storage.data_dir / "comparisons" / comparison_id)
+
         return {
-            "comparison_id": comparison_id,
-            "project_a": project_a,
-            "project_b": project_b,
-            "version_a": metadata_a.get("version_id"),
-            "version_b": metadata_b.get("version_id"),
-            "summary": summary,
-            "semantic_diff": semantic_diff,
-            "dimensions": dimensions_dicts,
-            "recommendations": recommendations,
-            "compare_html": compare_html,
+            **state,
+            "comparison_result": {
+                "comparison_id": comparison_id,
+                "project_a": project_a,
+                "project_b": project_b,
+                "version_a": metadata_a.get("version_id"),
+                "version_b": metadata_b.get("version_id"),
+                "summary": summary,
+                "semantic_diff": semantic_diff,
+                "dimensions": dimensions_dicts,
+                "recommendations": recommendations,
+                "compare_html": compare_html,
+            },
+            "comparison_dir": comparison_dir,
         }
 
     def _analyze_semantic_diff(

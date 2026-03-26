@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from evaluator.llm import LLMClient
+from .base_agent import BaseAgent, AgentMeta
 
 
 @dataclass
@@ -29,11 +30,26 @@ class ClaimedEntities:
 
 
 # 配置常量
-MAX_SECTION_LENGTH = 3000
-MAX_LLM_WORKERS = 2
-LLM_TIMEOUT = 60
-LLM_RETRY_COUNT = 3
-LLM_RETRY_BASE_DELAY = 1.0
+
+try:
+    from evaluator.config import config
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+    config = None
+
+def _get_llm_workers() -> int:
+    return config.max_llm_workers if config and HAS_CONFIG else 4
+
+def _get_llm_timeout() -> int:
+    return config.llm_call_timeout if config and HAS_CONFIG else 60
+
+def _get_max_retries() -> int:
+    return config.max_retries if config and HAS_CONFIG else 3
+
+def _get_retry_delay() -> float:
+    return config.llm_retry_base_delay if config and HAS_CONFIG else 1.0
+
 
 # 有效的 GitHub Actions 触发条件
 VALID_TRIGGERS = {
@@ -44,10 +60,22 @@ VALID_TRIGGERS = {
 }
 
 
-class ReviewerAgent:
+class ReviewerAgent(BaseAgent):
     """报告验证 Agent - 确保报告准确且完整"""
-    
+
+    @classmethod
+    def describe(cls) -> AgentMeta:
+        return AgentMeta(
+            name="ReviewerAgent",
+            description="验证报告的准确性和完整性，决定是否需要重试",
+            category="analysis",
+            inputs=["cicd_analysis", "project_path", "report_md"],
+            outputs=["review_result", "review_issues", "corrected_report"],
+            dependencies=["CICDAgent"],
+        )
+
     def __init__(self, llm: Optional[LLMClient] = None):
+        super().__init__()
         self.llm = llm
     
     # 常见非 Job 关键词（用于过滤）
@@ -80,10 +108,10 @@ class ReviewerAgent:
         'gh', 'cli', 'command', 'commands', 'script', 'scripts',
     }
     
-    def run(self, state: dict) -> dict:
-        """执行报告验证"""
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         cicd_analysis = state.get("cicd_analysis") or {}
         project_path = state.get("project_path") or ""
+        errors = state.get("errors", [])
         
         ci_data_path = cicd_analysis.get("ci_data_path")
         if not ci_data_path:
@@ -104,13 +132,13 @@ class ReviewerAgent:
         if not Path(report_path).exists():
             print(f"  ⚠️ 未找到报告文件: {report_path}")
             return {
+                **state,
                 "review_result": {"status": "error", "message": "报告文件不存在"},
                 "review_issues": [],
-                "errors": ["报告文件不存在"]
+                "errors": errors + ["报告文件不存在"],
             }
         
         try:
-            # 1. 加载数据
             print("\n[1/6] 加载数据...")
             ci_data = self._load_ci_data(ci_data_path)
             report = self._load_report(report_path)
@@ -118,58 +146,56 @@ class ReviewerAgent:
             
             if not ci_data:
                 return {
+                    **state,
                     "review_result": {"status": "error", "message": "无法加载 CI 数据"},
                     "review_issues": [],
-                    "errors": ["CI 数据加载失败"]
+                    "errors": errors + ["CI 数据加载失败"],
                 }
             
             print(f"  工作流数: {len(ci_data.get('workflows', {}))}")
             print(f"  脚本数: {len(ci_data.get('scripts', []))}")
             
-            # 2. 构建真实数据集合
             print("\n[2/6] 构建真实数据集合...")
             ground_truth = self._build_ground_truth(ci_data)
             print(f"  真实工作流: {len(ground_truth.workflows)}")
             print(f"  真实 Job: {sum(len(j) for j in ground_truth.jobs.values())}")
             
-            # 3. 提取报告中的声称数据
             print("\n[3/6] 提取报告中的实体...")
             claimed = self._extract_claimed(report, ground_truth)
             print(f"  声称工作流: {len(claimed.workflows)}")
             print(f"  声称 Job: {sum(len(j) for j in claimed.jobs.values())}")
+            print(f"  (使用正则统计，不依赖 LLM)")
             
-            # 4. 双向验证
             print("\n[4/6] 双向验证...")
-            accuracy_issues = self._bidirectional_validate(ground_truth, claimed)
+            accuracy_issues = self._bidirectional_validate(ground_truth, claimed, report)
             print(f"  发现 {len(accuracy_issues)} 个准确性问题")
             
-            # 5. 完整性检查（LLM）
             print("\n[5/6] 完整性检查...")
             completeness_issues = self._validate_completeness(report, ground_truth, claimed)
             print(f"  发现 {len(completeness_issues)} 个完整性问题")
             
-            # 6. 分类处理
             print("\n[6/6] 分类处理...")
             all_issues = accuracy_issues + completeness_issues
             
             result = self._classify_and_process(
-                all_issues, report, ci_data, state.get("review_retry_count", 0)
+                all_issues, report, ci_data, state.get("review_retry_count", 0), state
             )
             
             print(f"\n{'='*50}")
             print(f"  验证结果: {result.get('review_result', {}).get('status', 'unknown')}")
             print(f"{'='*50}")
             
-            return result
+            return {**state, **result}
             
         except Exception as e:
             print(f"  ❌ 验证过程出错: {e}")
             import traceback
             traceback.print_exc()
             return {
+                **state,
                 "review_result": {"status": "error", "message": str(e)},
                 "review_issues": [],
-                "errors": [f"验证过程出错: {str(e)}"]
+                "errors": errors + [f"验证过程出错: {str(e)}"],
             }
     
     def _load_ci_data(self, path: str) -> dict:
@@ -203,24 +229,20 @@ class ReviewerAgent:
     def _build_ground_truth(self, ci_data: dict) -> GroundTruth:
         """从 ci_data.json 构建真实实体集合"""
         
-        # 提取工作流
         workflows = set(ci_data.get("workflows", {}).keys())
         
-        # 提取 Job 和触发条件
         jobs = {}
         triggers = {}
         for wf_name, wf_data in ci_data.get("workflows", {}).items():
             jobs[wf_name] = set(wf_data.get("jobs", {}).keys())
             triggers[wf_name] = set(wf_data.get("triggers", []))
         
-        # 提取脚本路径
         scripts = set()
         for script in ci_data.get("scripts", []):
             path = script.get("path", "")
             if path:
                 scripts.add(path)
         
-        # 提取 Actions（从 Job steps 中提取）
         actions = set()
         for wf_data in ci_data.get("workflows", {}).values():
             for job_data in wf_data.get("jobs", {}).values():
@@ -238,64 +260,78 @@ class ReviewerAgent:
             actions=actions
         )
     
+    def _count_workflows_by_regex(self, report: str) -> int:
+        """用正则统计工作流详细描述数量"""
+        pattern = r'####\s+\d+\.\d+\s+[\w-]+\.yml'
+        return len(re.findall(pattern, report))
+    
+    def _count_job_tables_by_regex(self, report: str) -> int:
+        """用正则统计 Job 表格数量"""
+        pattern = r'\|\s*序号\s*\|\s*Job名称\s*\|'
+        return len(re.findall(pattern, report))
+    
+    def _count_step_details_by_regex(self, report: str) -> int:
+        """用正则统计步骤详情数量"""
+        pattern = r'步骤\d+:'
+        return len(re.findall(pattern, report))
+    
+    def _extract_workflow_names_by_regex(self, report: str) -> Set[str]:
+        """用正则提取工作流名称列表"""
+        pattern = r'####\s+\d+\.\d+\s+([\w-]+\.yml)'
+        return set(re.findall(pattern, report))
+    
     def _extract_claimed(self, report: str, ground_truth: GroundTruth) -> ClaimedEntities:
-        """从报告中提取声称的实体（代码 + LLM 混合方案）"""
+        """从报告中提取声称的实体（使用正则统计，不依赖 LLM）"""
         
-        # === 代码提取部分（高置信度）===
+        claimed_workflows = self._extract_workflow_names_by_regex(report)
         
-        # 1. 工作流名称（更精确的模式）
-        claimed_workflows = set()
-        # 方法A：搜索已知工作流名（确保不遗漏）
-        for wf in ground_truth.workflows:
-            if wf in report:
-                claimed_workflows.add(wf)
-        # 方法B：搜索完整的工作流模式（xxx.yml，前后有空格或特殊字符）
-        # 只保留与已知工作流名匹配的结果
-        potential_wfs = re.findall(r'[\w][\w-]*\.yml\b', report)
-        for p in potential_wfs:
-            if p in ground_truth.workflows:
-                claimed_workflows.add(p)
+        if not claimed_workflows:
+            for wf in ground_truth.workflows:
+                if wf in report:
+                    claimed_workflows.add(wf)
         
-        # 2. 触发条件（从 YAML 代码块中提取，更精确）
         claimed_triggers = {}
         for wf in claimed_workflows:
             wf_triggers = set()
             
-            # 找到该工作流的 YAML 代码块
             yaml_blocks = self._extract_yaml_blocks_for_workflow(report, wf)
-            
             for yaml_content in yaml_blocks:
-                # 从 YAML 内容中提取触发条件（使用正则匹配完整单词）
                 for trigger in VALID_TRIGGERS:
-                    # 使用正则匹配完整的触发条件名称
                     pattern = rf'^\s*{re.escape(trigger)}\s*:'
                     if re.search(pattern, yaml_content, re.MULTILINE):
                         wf_triggers.add(trigger)
             
+            wf_section = self._extract_workflow_section(report, wf)
+            for trigger in VALID_TRIGGERS:
+                pattern = rf'`{re.escape(trigger)}`'
+                if re.search(pattern, wf_section):
+                    wf_triggers.add(trigger)
+            
+            for trigger in VALID_TRIGGERS:
+                pattern = rf'^###\s+{re.escape(trigger)}(\s*\(|\s*$)'
+                if re.search(pattern, wf_section, re.MULTILINE):
+                    wf_triggers.add(trigger)
+            
             claimed_triggers[wf] = wf_triggers
         
-        # 3. 脚本路径（代码提取 - 更精确的模式）
+        claimed_jobs = {}
+        for wf in claimed_workflows:
+            section = self._extract_workflow_section(report, wf)
+            known_jobs = ground_truth.jobs.get(wf, set())
+            claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs)
+        
         claimed_scripts = set()
-        # 匹配路径格式的脚本（包含 / 或 \）
         script_patterns = [
-            r'[\w./\\-]+\.py\b',  # Python 脚本
-            r'[\w./\\-]+\.sh\b',  # Shell 脚本
-            r'[\w./\\-]+\.bash\b', # Bash 脚本
+            r'[\w./\\-]+\.py\b',
+            r'[\w./\\-]+\.sh\b',
+            r'[\w./\\-]+\.bash\b',
         ]
         for pattern in script_patterns:
             claimed_scripts.update(re.findall(pattern, report))
         
-        # === LLM 提取部分（Job 名称需要语义理解）===
-        
-        # 4. Job 名称
-        claimed_jobs = self._extract_jobs_smart(report, claimed_workflows, ground_truth)
-        
-        # 5. Actions（代码提取）
         claimed_actions = set()
-        # 更精确的 Action 模式（通常是 owner/repo 格式）
         potential_actions = re.findall(r'\b[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+\b', report)
         for a in potential_actions:
-            # 过滤掉明显不是 action 的
             if not any(x in a.lower() for x in ['http', 'https', 'www', 'file:', 'path:', 'url:']):
                 claimed_actions.add(a)
         
@@ -336,7 +372,8 @@ class ReviewerAgent:
             return claimed_jobs
         
         # 并发 LLM 提取
-        print(f"  使用 LLM 提取 Job（并发数: {MAX_LLM_WORKERS}）...")
+        max_workers = _get_llm_workers()
+        print(f"  使用 LLM 提取 Job（并发数: {max_workers}）...")
         
         def extract_single(wf_name: str) -> tuple:
             section = workflow_sections.get(wf_name, "")
@@ -345,7 +382,7 @@ class ReviewerAgent:
             return (wf_name, jobs)
         
         try:
-            with ThreadPoolExecutor(max_workers=MAX_LLM_WORKERS) as executor:
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 futures = {
                     executor.submit(extract_single, wf): wf 
                     for wf in workflow_sections.keys()
@@ -354,7 +391,8 @@ class ReviewerAgent:
                 for future in as_completed(futures):
                     wf = futures[future]
                     try:
-                        wf_name, jobs = future.result(timeout=LLM_TIMEOUT)
+                        timeout = _get_llm_timeout()
+                        wf_name, jobs = future.result(timeout=timeout)
                         claimed_jobs[wf_name] = jobs
                         print(f"    ✓ {wf_name}: {len(jobs)} jobs")
                     except Exception as e:
@@ -375,9 +413,11 @@ class ReviewerAgent:
         self, 
         report: str, 
         wf_name: str, 
-        max_length: int = MAX_SECTION_LENGTH
+        max_length: Optional[int] = None
     ) -> str:
         """提取单个工作流的上下文（限制长度）"""
+        if max_length is None:
+            max_length = config.max_section_length if config and HAS_CONFIG else 3000
         
         # 找到工作流名称的所有位置
         pattern = re.escape(wf_name)
@@ -471,7 +511,10 @@ class ReviewerAgent:
 
 输出："""
         
-        for attempt in range(LLM_RETRY_COUNT):
+        max_retries = _get_max_retries()
+        retry_delay = _get_retry_delay()
+        
+        for attempt in range(max_retries):
             try:
                 response = self.llm.chat(prompt)
                 
@@ -488,9 +531,9 @@ class ReviewerAgent:
                 
                 return jobs
             except Exception as e:
-                if attempt < LLM_RETRY_COUNT - 1:
-                    delay = LLM_RETRY_BASE_DELAY * (attempt + 1)
-                    print(f"    ⚠️ LLM 提取失败: {e}，{delay}s 后重试 ({attempt + 2}/{LLM_RETRY_COUNT})")
+                if attempt < max_retries - 1:
+                    delay = retry_delay * (attempt + 1)
+                    print(f"    ⚠️ LLM 提取失败: {e}，{delay}s 后重试 ({attempt + 2}/{max_retries})")
                     import time
                     time.sleep(delay)
                 else:
@@ -530,9 +573,13 @@ class ReviewerAgent:
     def _bidirectional_validate(
         self, 
         ground_truth: GroundTruth, 
-        claimed: ClaimedEntities
+        claimed: ClaimedEntities,
+        report: str = ""
     ) -> List[dict]:
-        """双向验证"""
+        """双向验证
+        
+        在发现问题时，同时记录锚点信息，避免修复时重新搜索
+        """
         issues = []
         
         # === 正向验证：检查遗漏（真实存在但报告中未提及）===
@@ -544,7 +591,8 @@ class ReviewerAgent:
                 "severity": "incomplete",
                 "type": "workflow_missing",
                 "entity": wf,
-                "message": f"工作流 '{wf}' 未在报告中提及"
+                "message": f"工作流 '{wf}' 未在报告中提及",
+                "anchor": {"type": "stage_section", "workflow": wf},
             })
         
         # Job 遗漏
@@ -557,7 +605,8 @@ class ReviewerAgent:
                     "type": "job_missing",
                     "workflow": wf,
                     "entity": job,
-                    "message": f"工作流 '{wf}' 的 Job '{job}' 未在报告中提及"
+                    "message": f"工作流 '{wf}' 的 Job '{job}' 未在报告中提及",
+                    "anchor": {"type": "job_table", "workflow": wf},
                 })
         
         # 触发条件遗漏
@@ -570,7 +619,8 @@ class ReviewerAgent:
                     "type": "trigger_missing",
                     "workflow": wf,
                     "entity": trigger,
-                    "message": f"工作流 '{wf}' 的触发条件 '{trigger}' 未在报告中提及"
+                    "message": f"工作流 '{wf}' 的触发条件 '{trigger}' 未在报告中提及",
+                    "anchor": {"type": "trigger_yaml", "workflow": wf},
                 })
         
         # === 反向验证：检查虚构（报告中提及但真实不存在）===
@@ -582,7 +632,8 @@ class ReviewerAgent:
                 "severity": "critical",
                 "type": "workflow_fake",
                 "entity": wf,
-                "message": f"工作流 '{wf}' 不存在于项目中（虚构）"
+                "message": f"工作流 '{wf}' 不存在于项目中（虚构）",
+                "anchor": {"type": "workflow_section", "workflow": wf},
             })
         
         # Job 虚构（只检查有对应工作流的情况）
@@ -596,7 +647,8 @@ class ReviewerAgent:
                         "type": "job_fake",
                         "workflow": wf,
                         "entity": job,
-                        "message": f"工作流 '{wf}' 的 Job '{job}' 不存在（虚构）"
+                        "message": f"工作流 '{wf}' 的 Job '{job}' 不存在（虚构）",
+                        "anchor": {"type": "job_row", "workflow": wf, "job": job},
                     })
         
         # 触发条件虚构
@@ -607,10 +659,11 @@ class ReviewerAgent:
                 for trigger in fake_triggers:
                     issues.append({
                         "severity": "critical",
-                        "type": "trigger_fake",
+                        "type": "trigger_fabricated",
                         "workflow": wf,
                         "entity": trigger,
-                        "message": f"工作流 '{wf}' 不存在触发条件 '{trigger}'（虚构）"
+                        "message": f"工作流 '{wf}' 不存在触发条件 '{trigger}'（虚构）",
+                        "anchor": {"type": "trigger_yaml", "workflow": wf},
                     })
         
         return issues
@@ -621,98 +674,42 @@ class ReviewerAgent:
         ground_truth: GroundTruth,
         claimed: ClaimedEntities
     ) -> List[dict]:
-        """完整性检查（使用 LLM 判断）"""
+        """完整性检查（使用正则统计 + 规则对比，不依赖 LLM）"""
         issues = []
         
-        if not self.llm:
-            print("  ⚠️ 未配置 LLM，跳过完整性检查")
-            return issues
+        reported_wf_count = self._count_workflows_by_regex(report)
+        actual_wf_count = len(ground_truth.workflows)
         
-        # 构建完整性检查 prompt
-        workflow_count = len(ground_truth.workflows)
-        analyzed_count = len(claimed.workflows & ground_truth.workflows)
-        job_count = sum(len(j) for j in ground_truth.jobs.values())
-        analyzed_job_count = sum(
-            len(claimed.jobs.get(wf, set()) & ground_truth.jobs.get(wf, set()))
-            for wf in ground_truth.workflows
-        )
+        reported_job_count = self._count_job_tables_by_regex(report)
+        actual_job_count = sum(len(jobs) for jobs in ground_truth.jobs.values())
         
-        # 准备工作流分析摘要
-        wf_summaries = []
-        for wf in list(ground_truth.workflows)[:10]:
-            section = self._extract_workflow_section(report, wf, max_length=500)
-            wf_summaries.append(f"### {wf}\n{section[:400]}...")
+        reported_step_count = self._count_step_details_by_regex(report)
         
-        wf_summaries_text = "\n\n".join(wf_summaries)
+        print(f"  工作流: 报告={reported_wf_count}, 实际={actual_wf_count}")
+        print(f"  Job表格: 报告={reported_job_count}, 实际={actual_job_count}")
+        print(f"  步骤详情: {reported_step_count}")
         
-        # 提取关键发现和建议
-        findings_match = re.search(
-            r'##\s+.*?发现.*?建议.*?\n(.*?)(?=^##|\Z)', 
-            report, 
-            re.DOTALL | re.MULTILINE
-        )
-        findings_text = findings_match.group(1)[:2000] if findings_match else "(未找到)"
+        if reported_wf_count < actual_wf_count:
+            missing_count = actual_wf_count - reported_wf_count
+            issues.append({
+                "severity": "incomplete",
+                "type": "missing_workflow_detail",
+                "message": f"报告声称已分析 {actual_wf_count} 个工作流，但仅详细展示了 {reported_wf_count} 个工作流的分析内容，缺少剩余 {missing_count} 个工作流的分析。"
+            })
         
-        prompt = f"""你是一个 CI/CD 报告质量审核员。请评估以下报告的完整性和详尽程度。
-
-## 项目信息
-- 工作流总数: {workflow_count}
-- 已分析工作流数: {analyzed_count}
-- Job 总数: {job_count}
-- 已提及 Job 数: {analyzed_job_count}
-
-## 工作流分析内容摘要
-{wf_summaries_text}
-
-## 关键发现和建议部分
-{findings_text}
-
-## 评估要求
-1. **覆盖率**: 每个工作流是否都有详细分析（目的、触发条件、Job详情、步骤说明）？
-2. **深度**: 每个工作流的分析是否充分，而不是简单罗列？
-3. **发现和建议**: 是否有至少 3 条有价值的发现和建议？
-4. **准确性**: 分析内容是否与实际工作流配置相符？
-
-## 输出格式（只输出 JSON，不要其他内容）
-{{
-  "is_complete": true或false,
-  "score": 0-100的数字分数,
-  "issues": [
-    {{
-      "type": "missing_workflow_detail"或"weak_analysis"或"weak_findings"或其他,
-      "workflow": "相关工作流名（如果有）",
-      "message": "具体问题描述",
-      "suggestion": "改进建议"
-    }}
-  ]
-}}
-"""
+        if reported_job_count < reported_wf_count:
+            issues.append({
+                "severity": "incomplete",
+                "type": "missing_job_table",
+                "message": f"有 {reported_wf_count} 个工作流，但只有 {reported_job_count} 个 Job 表格，部分工作流缺少 Job 详细分析。"
+            })
         
-        try:
-            print("  正在使用 LLM 评估报告完整性...")
-            response = self.llm.chat(prompt)
-            
-            # 解析 JSON 响应
-            json_match = re.search(r'\{[\s\S]*\}', response)
-            if json_match:
-                result = json.loads(json_match.group(0))
-                
-                is_complete = result.get("is_complete", True)
-                score = result.get("score", 100)
-                
-                print(f"  完整性评分: {score}/100")
-                
-                if not is_complete or score < 70:
-                    for issue in result.get("issues", []):
-                        issues.append({
-                            "severity": "incomplete",
-                            "type": issue.get("type", "unknown"),
-                            "workflow": issue.get("workflow"),
-                            "message": issue.get("message", "内容不够详尽"),
-                            "suggestion": issue.get("suggestion", "")
-                        })
-        except Exception as e:
-            print(f"  ⚠️ LLM 完整性检查失败: {e}")
+        if reported_step_count < 50 and actual_job_count > 10:
+            issues.append({
+                "severity": "incomplete",
+                "type": "weak_analysis",
+                "message": f"多数工作流分析仅停留在表格概览层面，缺乏对具体执行步骤的深入剖析（仅 {reported_step_count} 个步骤详情）。"
+            })
         
         return issues
     
@@ -721,9 +718,13 @@ class ReviewerAgent:
         all_issues: List[dict], 
         report: str, 
         ci_data: dict,
-        retry_count: int
+        retry_count: int,
+        state: Optional[Dict[str, Any]] = None
     ) -> dict:
-        """分类问题并决定处理方式"""
+        """分类问题并决定处理方式
+        
+        简化版：只负责发现问题，修复由 ReportFixAgent 处理
+        """
         
         if not all_issues:
             print("  ✅ 所有验证通过")
@@ -733,88 +734,82 @@ class ReviewerAgent:
                 "review_retry_count": retry_count,
             }
         
-        # 分类问题
         minor_issues = [i for i in all_issues if i.get("severity") == "minor"]
         critical_issues = [i for i in all_issues if i.get("severity") == "critical"]
         incomplete_issues = [i for i in all_issues if i.get("severity") == "incomplete"]
         
         print(f"  问题分类: critical={len(critical_issues)}, incomplete={len(incomplete_issues)}, minor={len(minor_issues)}")
         
-        # 处理优先级: critical > incomplete > minor
-        if critical_issues:
-            if retry_count >= 3:
-                print("  ⚠️ 重试次数已达上限，记录问题后强制继续")
-                return {
-                    "review_result": {"status": "max_retry", "reason": "critical_issues"},
-                    "review_issues": all_issues,
-                    "review_retry_count": retry_count,
-                }
-            
-            print(f"  🔴 发现 {len(critical_issues)} 个重大错误，需要重做")
-            return {
-                "review_result": {"status": "critical", "issues_count": len(critical_issues)},
-                "review_issues": critical_issues,
-                "review_retry_count": retry_count + 1,
-                "cicd_retry_mode": "retry",
-                "cicd_retry_issues": critical_issues,
-                "cicd_existing_report": report,
-            }
+        self._print_issues_detail(all_issues)
         
-        if incomplete_issues:
-            if retry_count >= 3:
-                print("  ⚠️ 重试次数已达上限，记录问题后强制继续")
-                return {
-                    "review_result": {"status": "max_retry", "reason": "incomplete"},
-                    "review_issues": all_issues,
-                    "review_retry_count": retry_count,
-                }
-            
-            print(f"  🟡 发现 {len(incomplete_issues)} 个完整性问题，需要补充")
-            return {
-                "review_result": {"status": "incomplete", "issues_count": len(incomplete_issues)},
-                "review_issues": incomplete_issues,
-                "review_retry_count": retry_count + 1,
-                "cicd_retry_mode": "supplement",
-                "cicd_retry_issues": incomplete_issues,
-                "cicd_existing_report": report,
-            }
-        
-        if minor_issues:
-            print(f"  🔹 发现 {len(minor_issues)} 个小错误，正在修正...")
-            corrected = self._fix_minor_issues(report, minor_issues, ci_data)
-            return {
-                "review_result": {"status": "corrected", "corrected_count": len(minor_issues)},
-                "review_issues": minor_issues,
-                "review_retry_count": retry_count,
-                "corrected_report": corrected,
-            }
-        
+        print(f"\n  发现 {len(all_issues)} 个问题，需要修复")
         return {
-            "review_result": {"status": "passed"},
-            "review_issues": [],
+            "review_result": {"status": "issues_found", "issues_count": len(all_issues)},
+            "review_issues": all_issues,
             "review_retry_count": retry_count,
         }
     
-    def _fix_minor_issues(self, report: str, issues: List[dict], ci_data: dict) -> str:
-        """修正小错误"""
-        corrected = report
+    def _print_issues_detail(self, issues: List[dict]) -> None:
+        """详细输出问题列表，按严重级别分组"""
+        if not issues:
+            return
         
-        for issue in issues:
-            if issue.get("type") == "script_fake":
-                script_path = issue.get("entity", "")
-                
-                # 尝试找到最接近的脚本名
-                scripts = ci_data.get("scripts", [])
-                script_name = Path(script_path).name
-                
-                for s in scripts:
-                    s_path = s.get("path", "")
-                    if script_name in s_path:
-                        corrected = corrected.replace(f"`{script_path}`", f"`{s_path}`")
-                        print(f"    修正: {script_path} → {s_path}")
-                        break
+        critical_issues = [i for i in issues if i.get("severity") == "critical"]
+        incomplete_issues = [i for i in issues if i.get("severity") == "incomplete"]
+        minor_issues = [i for i in issues if i.get("severity") == "minor"]
         
-        return corrected
+        print("\n=== 问题详情 ===\n")
+        
+        if critical_issues:
+            print(f"【Critical 问题】({len(critical_issues)} 个)")
+            for i, issue in enumerate(critical_issues, 1):
+                msg = issue.get("message", str(issue))
+                print(f"  [{i}] {issue.get('type', 'unknown')}: {msg}")
+            print()
+        
+        if incomplete_issues:
+            print(f"【Incomplete 问题】({len(incomplete_issues)} 个)")
+            for i, issue in enumerate(incomplete_issues, 1):
+                msg = issue.get("message", str(issue))
+                print(f"  [{i}] {issue.get('type', 'unknown')}: {msg}")
+            print()
+        
+        if minor_issues:
+            print(f"【Minor 问题】({len(minor_issues)} 个)")
+            for i, issue in enumerate(minor_issues, 1):
+                msg = issue.get("message", str(issue))
+                print(f"  [{i}] {issue.get('type', 'unknown')}: {msg}")
+            print()
+    
+    def _extract_section_by_lines(self, content: str, title_pattern: str) -> str:
+        """使用行解析提取章节，不依赖正则"""
+        lines = content.split('\n')
+        result = []
+        in_section = False
+        
+        for line in lines:
+            if line.startswith('## ') and title_pattern in line:
+                in_section = True
+                result.append(line)
+                continue
+            
+            if in_section and line.startswith('## '):
+                break
+            
+            if in_section:
+                result.append(line)
+        
+        return '\n'.join(result)
+    
+    def _check_section_empty(self, report: str, section_title: str) -> bool:
+        """检查指定章节是否为空或缺失"""
+        section = self._extract_section_by_lines(report, section_title)
+        if not section:
+            return True
+        
+        lines = section.split('\n')
+        content_lines = [l for l in lines[1:] if l.strip()]
+        return len(content_lines) == 0
     
     def validate_llm_response(
         self,

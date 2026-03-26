@@ -1,45 +1,153 @@
-# 状态定义 - LangGraph 图中各 Agent 共享的数据
-from typing import TypedDict, Optional, Any
+"""统一状态定义 - LangGraph图中各Agent共享的数据
+
+设计原则:
+1. 所有字段都有明确的类型
+2. 可变集合使用Reducer自动合并
+3. 字段按功能分组
+
+Reducer使用:
+- errors: Annotated[List[str], merge_errors]  # 多节点追加错误
+- completed_steps: Annotated[List[str], merge_steps]  # 多节点去重合并
+- warnings: Annotated[List[str], merge_warnings]  # 多节点追加警告
+"""
+from typing import TypedDict, Optional, Any, List, Dict, Annotated
 
 
-class EvaluatorState(TypedDict):
-    """全局状态"""
+# === Reducer函数 ===
+def merge_errors(left: List[str], right: List[str]) -> List[str]:
+    """错误列表reducer - 追加合并
+    
+    用于多节点返回错误时自动合并。
+    """
+    return left + right
 
-    # === UI 管理 ===
-    ui_manager: Optional[Any]           # UI Manager 实例
 
-    # === 输入阶段 ===
-    user_input: Optional[str]           # 用户原始输入（路径或URL）
-    project_url: Optional[str]          # 代码平台地址
-    project_path: Optional[str]         # 本地项目路径
-    display_name: Optional[str]         # 显示名称（可覆盖自动提取的项目名）
+def merge_steps(left: List[str], right: List[str]) -> List[str]:
+    """完成步骤reducer - 去重合并（保持顺序）
+    
+    用于多节点返回completed_steps时去重。
+    """
+    return list(dict.fromkeys(left + right))
 
-    # === 存储阶段 ===
-    storage_version_id: Optional[str]  # 版本ID (v1_20260319_103000)
-    storage_dir: Optional[str]         # 持久化存储路径
 
-    # === 加载阶段 ===
-    project_name: Optional[str]         # 项目名称
-    clone_status: Optional[str]         # 克隆状态: success / failed / skipped
-    clone_error: Optional[str]          # 克隆失败原因
+def merge_warnings(left: List[str], right: List[str]) -> List[str]:
+    """警告列表reducer - 追加合并
+    
+    用于多节点追加警告。
+    """
+    return left + right
 
-    # === 分析阶段 ===
-    cicd_analysis: Optional[dict]       # CI/CD 分析结果
 
-    # === Reviewer 阶段 ===
-    review_result: Optional[dict]       # 验证结果 {"status": "passed/corrected/critical/incomplete"}
-    review_issues: Optional[list]       # 发现的问题列表
-    review_retry_count: int            # 重试次数 (默认0)
-    corrected_report: Optional[str]     # 修正后的报告（小错误直接修正时使用）
-    cicd_retry_mode: Optional[str]     # "retry" / "supplement" / None
-    cicd_retry_issues: Optional[list]   # 需要修正/补充的问题列表
-    cicd_existing_report: Optional[str]  # 现有报告（补充模式时使用）
+def merge_lists(left: list, right: list) -> list:
+    """通用列表reducer - 追加合并"""
+    return left + right
 
-    # === 输出阶段 ===
-    html_report: Optional[str]          # HTML 报告内容
-    report_path: Optional[str]          # 报告文件路径
 
-    # === 控制流 ===
-    should_download: bool               # 是否需要下载
-    current_step: str                   # 当前执行步骤
-    errors: list[str]                   # 错误列表
+class EvaluatorState(TypedDict, total=False):
+    """统一状态定义 - 合并原EvaluatorState和CICDState
+    
+    使用Reducer的字段会在多节点更新时自动合并。
+    """
+    
+    # ========== UI管理 ==========
+    ui_manager: Optional[Any]
+    
+    # ========== 用户输入 ==========
+    user_input: Optional[str]
+    intent: Optional[str]
+    params: Dict[str, Any]
+    
+    # ========== 上下文信息 ==========
+    known_projects: List[str]
+    context: Dict[str, Any]
+    
+    # ========== 项目信息 ==========
+    project_name: Optional[str]
+    project_path: Optional[str]
+    project_url: Optional[str]
+    display_name: Optional[str]
+    
+    # ========== 存储信息 ==========
+    storage_version_id: Optional[str]
+    storage_dir: Optional[str]
+    
+    # ========== 加载阶段 ==========
+    clone_status: Optional[str]
+    clone_error: Optional[str]
+    
+    # ========== CI/CD数据 (合并CICDState) ==========
+    ci_data: Optional[Dict]
+    ci_data_path: Optional[str]
+    workflow_count: int
+    actions_count: int
+    
+    # ========== 分析策略 ==========
+    strategy: Optional[str]  # single/parallel/skip
+    prompts: List[str]
+    llm_responses: List[str]
+    merged_response: Optional[str]
+    
+    # ========== 分析结果 ==========
+    cicd_analysis: Optional[Dict]
+    validation_result: Optional[Dict]
+    report_md: Optional[str]
+    report_html: Optional[str]
+    architecture_json: Optional[Dict]
+    analysis_summary: Optional[Dict]
+    
+    # ========== Review结果 ==========
+    review_result: Optional[Dict]
+    review_issues: List[Dict]
+    corrected_report: Optional[str]
+    
+    # ========== 智能Agent输出 ==========
+    similar_projects: List[Dict]
+    comparison_suggestions: List[Dict]
+    project_trends: Optional[Dict]
+    recommendations: List[Dict]
+    quick_wins: List[Dict]
+    reflection_result: Optional[Dict]
+    
+    # ========== 控制流 ==========
+    should_download: Optional[bool]
+    skip_review: bool
+    current_step: Optional[str]
+    orchestrator_decision: Optional[Dict]
+    
+    # ========== 完成步骤 (使用Reducer) ==========
+    completed_steps: Annotated[List[str], merge_steps]
+    
+    # ========== 重试控制 ==========
+    retry_count: int
+    retry_mode: Optional[str]  # retry/supplement
+    retry_issues: List[Dict]
+    
+    # ========== CI/CD 重试控制 (兼容字段) ==========
+    cicd_retry_mode: Optional[str]
+    cicd_retry_issues: List[Dict]
+    cicd_retry_count: int
+    cicd_existing_report: Optional[str]
+    
+    # ========== Review 重试控制 ==========
+    review_retry_count: int
+    
+    # ========== 错误和警告 (使用Reducer) ==========
+    errors: Annotated[List[str], merge_errors]
+    warnings: Annotated[List[str], merge_warnings]
+    
+    # ========== 对比功能 ==========
+    project_a: Optional[str]
+    project_b: Optional[str]
+    version_a: Optional[str]
+    version_b: Optional[str]
+    dimensions: Optional[List[str]]
+    comparison_result: Optional[Dict]
+    
+    # ========== LLM配置 ==========
+    llm: Optional[Any]
+    llm_config: Dict[str, Any]
+
+
+# === 向后兼容别名 ===
+# 保留旧的字段名作为别名，便于逐步迁移
+EvaluatorStateAlias = EvaluatorState

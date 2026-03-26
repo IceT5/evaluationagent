@@ -15,6 +15,7 @@ from evaluator.skills.ci_analyzer.ci_diagram_generator import (
     generate_llm_prompt,
     generate_architecture_diagram,
     generate_split_prompts,
+    generate_multi_round_prompts,
 )
 
 __all__ = [
@@ -23,6 +24,7 @@ __all__ = [
     "generate_llm_prompt",
     "generate_architecture_diagram",
     "generate_split_prompts",
+    "generate_multi_round_prompts",
     "CIAnalyzer",
 ]
 
@@ -163,7 +165,8 @@ class CIAnalyzer:
         ci_data: dict | str,
         output_dir: str,
         max_per_batch: int = 10,
-    ) -> list[str]:
+        use_multi_round: bool = True,
+    ) -> dict:
         """
         为大型项目生成多个 Prompt 文件
         
@@ -171,9 +174,16 @@ class CIAnalyzer:
             ci_data: CI 数据
             output_dir: 输出目录
             max_per_batch: 每批次最大工作流数
+            use_multi_round: 是否使用多轮对话模式（默认 True）
         
         Returns:
-            生成的文件路径列表
+            Dict 包含:
+            - main_rounds: 多轮对话的 rounds 列表（use_multi_round=True 时）
+            - main_system_prompt: 系统提示（use_multi_round=True 时）
+            - batch_files: 批次 prompt 文件列表
+            - all_files: 所有文件列表
+            - prompt_strategy: "multi_round" 或 "parallel"
+            - global_context: 全局上下文字符串
         """
         import json
         
@@ -185,8 +195,19 @@ class CIAnalyzer:
         else:
             raw_data = ci_data
         
-        files = generate_split_prompts(raw_data, output_dir, max_per_batch)
-        
-        print(f"  生成了 {len(files)} 个文件")
-        
-        return files
+        if use_multi_round:
+            result = generate_multi_round_prompts(raw_data, output_dir, max_per_batch)
+            total_files = len(result.get("all_files", []))
+            print(f"  生成了 {total_files} 个文件 (多轮对话模式)")
+            return result
+        else:
+            files = generate_split_prompts(raw_data, output_dir, max_per_batch)
+            print(f"  生成了 {len(files)} 个文件")
+            return {
+                "main_rounds": [],
+                "main_system_prompt": "",
+                "batch_files": files,
+                "all_files": files,
+                "prompt_strategy": "parallel",
+                "global_context": "",
+            }

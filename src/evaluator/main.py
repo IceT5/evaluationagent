@@ -14,7 +14,7 @@ if env_path.exists():
 else:
     load_dotenv()
 
-from evaluator.graph import create_graph
+from evaluator.core.graphs import create_main_graph
 from evaluator.llm import LLMClient
 from evaluator.ui import init_ui_manager
 
@@ -38,7 +38,7 @@ def main():
     else:
         print("\n警告: 未配置 LLM API Key，CI/CD 分析将无法执行")
 
-    app = create_graph(
+    app = create_main_graph(
         user_input=user_input,
         llm=llm,
         use_rich=use_rich,

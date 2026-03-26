@@ -438,6 +438,15 @@ def generate_llm_prompt(raw_data: Dict) -> str:
    - 清晰展示阶段之间的依赖关系
    - **重要**：每个节点要包含详细信息，如触发条件列表、工作流名称等
    
+   **触发入口层特殊要求**：
+   - 触发入口层的节点必须是**触发条件类型**，不是工作流名称
+     - 正确示例：`push`、`pull_request`、`workflow_dispatch`、`schedule`、`issue_comment`
+     - 错误示例：`ci-workflow-pull-request.yml`（这是工作流名称，不是触发条件）
+   - 每个触发条件节点要标注触发的工作流数量
+     - 示例：`push (3)` 表示有 3 个工作流使用 push 触发
+     - 示例：`workflow_dispatch (15)` 表示有 15 个工作流可手动触发
+   - 触发入口层不展示具体的工作流名称，只展示触发条件类型和数量
+   
    示例格式：
    ```
    ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -851,6 +860,432 @@ python ci_diagram_generator.py diagram ci_data.json merged_response.md CI_ARCHIT
     print(f"Generated: {merge_file}")
     
     return generated_files
+
+
+def generate_multi_round_prompts(raw_data: Dict, output_dir: str, max_workflows_per_batch: int = 10) -> Dict[str, Any]:
+    """Generate multi-round prompts for main analysis.
+    
+    Returns a structure containing:
+    - main_rounds: List of round prompts for main analysis
+    - main_system_prompt: System prompt for main analysis
+    - batch_files: List of batch prompt file paths
+    - all_files: List of all prompt file paths
+    - prompt_strategy: "multi_round"
+    
+    Args:
+        raw_data: Extracted CI/CD data
+        output_dir: Directory to save prompt files
+        max_workflows_per_batch: Maximum workflows per batch
+    
+    Returns:
+        Dict containing multi-round prompt data
+    """
+    import os
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    workflows = raw_data.get("workflows", {})
+    workflow_names = list(workflows.keys())
+    
+    global_context = _generate_global_context(raw_data)
+    
+    batches = []
+    for i in range(0, len(workflow_names), max_workflows_per_batch):
+        batch_names = workflow_names[i:i + max_workflows_per_batch]
+        batches.append(batch_names)
+    
+    generated_files = []
+    
+    main_system_prompt = _generate_multi_round_system_prompt()
+    main_rounds = _generate_multi_round_prompts_content(global_context)
+    
+    print(f"  [Multi-Round] 生成了 {len(main_rounds)} 个 rounds 用于 main 分析")
+    
+    for batch_idx, batch_names in enumerate(batches, 1):
+        batch_prompt = _generate_batch_prompt(raw_data, global_context, batch_names, batch_idx, len(batches))
+        batch_file = os.path.join(output_dir, f"prompt_{batch_idx}.txt")
+        with open(batch_file, "w", encoding="utf-8") as f:
+            f.write(batch_prompt)
+        generated_files.append(batch_file)
+        print(f"Generated: {batch_file}")
+    
+    merge_file = os.path.join(output_dir, "README.txt")
+    
+    if len(batches) == 0:
+        batch_info = "无详细批次（项目无工作流）"
+    elif len(batches) == 1:
+        batch_info = "prompt_1.txt - 详细文档"
+    else:
+        batch_info = f"prompt_1.txt ~ prompt_{len(batches)}.txt - 详细文档批次"
+    
+    merge_content = f"""# Prompt文件说明
+
+此项目CI/CD分析使用多轮对话模式：
+
+## Main 分析（多轮对话）
+
+main 分析使用 10 轮对话：
+- Round 0: 建立上下文
+- Round 1-2: 基础信息输出
+- Round 3-7: 关键发现和建议
+- Round 8: 调用关系树
+- Round 9: JSON 架构数据
+
+## Batch 分析（并发）
+
+{batch_info}：
+- 每个包含完整调用关系图
+- 当前批次的详细工作流信息
+
+## 合并结果
+
+所有分析完成后，将响应合并为一个文件后执行：
+python ci_diagram_generator.py diagram ci_data.json merged_response.md CI_ARCHITECTURE.md
+"""
+    with open(merge_file, "w", encoding="utf-8") as f:
+        f.write(merge_content)
+    generated_files.append(merge_file)
+    print(f"Generated: {merge_file}")
+    
+    return {
+        "main_rounds": main_rounds,
+        "main_system_prompt": main_system_prompt,
+        "batch_files": generated_files[:-1] if generated_files else [],
+        "all_files": generated_files,
+        "prompt_strategy": "multi_round",
+        "global_context": global_context,
+    }
+
+
+def _generate_multi_round_system_prompt() -> str:
+    """Generate system prompt for multi-round main analysis."""
+    return """你是 CI/CD 架构分析专家，负责分析项目的 CI/CD 架构并生成详细报告。
+
+**重要规则**：
+1. 必须使用中文输出
+2. 每轮只输出当前要求的章节，不要输出其他内容
+3. 等待用户指令后再输出下一章节
+4. 输出格式必须严格按照要求
+5. 所有分析必须基于提供的项目数据，不要凭空编造"""
+
+
+def _generate_multi_round_prompts_content(global_context: str) -> List[str]:
+    """Generate content for each round of multi-round main analysis.
+    
+    Args:
+        global_context: Global context string to include in Round 0
+    
+    Returns:
+        List of user prompts for each round
+    """
+    rounds = []
+    
+    rounds.append(_generate_round_0_context(global_context))
+    rounds.append(_generate_round_1_overview())
+    rounds.append(_generate_round_2_stage_division())
+    rounds.append(_generate_round_3_arch_summary())
+    rounds.append(_generate_round_4_strength_patterns())
+    rounds.append(_generate_round_5_problems())
+    rounds.append(_generate_round_6_recommendations())
+    rounds.append(_generate_round_7_call_tree())
+    rounds.append(_generate_round_8_json_data())
+    rounds.append(_generate_round_9_architecture_diagram())
+    
+    return rounds
+
+
+def _generate_round_0_context(global_context: str) -> str:
+    """Round 0: 建立上下文"""
+    return f"""我需要你分析一个项目的 CI/CD 架构。以下是完整的项目数据：
+
+## 全局信息
+
+{global_context}
+
+---
+
+请确认你已理解以上数据。回复"已理解，请开始分析"即可，不要输出其他内容。"""
+
+
+def _generate_round_1_overview() -> str:
+    """Round 1: 项目概述"""
+    return """请输出【项目概述】章节，格式如下：
+
+## 项目概述
+
+本项目是一个 [项目类型]，使用 GitHub Actions 进行 CI/CD 管理。
+
+**CI/CD 整体特点**：
+- 工作流总数：X 个
+- 主要触发方式：push、PR、schedule 等
+- 外部系统集成：xxx
+- 核心功能：xxx
+
+**注意**：只输出此章节，不要输出其他内容。"""
+
+
+def _generate_round_2_stage_division() -> str:
+    """Round 2: 阶段划分说明"""
+    return """请输出【阶段划分说明】章节，格式如下：
+
+## 阶段划分
+
+| 阶段 | 工作流 | 说明 |
+|------|--------|------|
+| 阶段一：触发入口 | - | 各类触发条件入口 |
+| 阶段二：代码检查 | pr-check, precommit | 代码质量检查 |
+| ... | ... | ... |
+
+**注意**：
+1. 根据工作流的实际功能和触发条件划分阶段
+2. 只输出此章节，不要输出其他内容"""
+
+
+def _generate_round_9_architecture_diagram() -> str:
+    """Round 9: 基于 JSON 数据生成架构图"""
+    return """请根据前面输出的 JSON 架构数据，生成【CI/CD 整体架构图】章节。
+
+## CI/CD 整体架构图
+
+**重要**：必须基于 JSON 数据的 `layers` 结构生成架构图！
+
+**要求**：
+1. **必须**包含 JSON 中的所有层（layers）
+2. 每个层的节点必须与 JSON 中的 `nodes` 对应
+3. 使用 ASCII 框线(┌─┐│└┘)和箭头(→▶▼▲)表示流程方向
+4. 触发入口层节点是触发条件类型，其他层节点是工作流名称
+5. 每个节点要包含关键信息（如 Job 数量、触发条件等）
+
+**格式示例**：
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              CI/CD 整体架构                                  │
+├─────────────────────────────────────────────────────────────────────────────┤
+│  ┌─────────────────── 触发入口层 ───────────────────┐                       │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐      │                       │
+│  │  │ push (3) │  │ schedule │  │workflow_ │      │                       │
+│  │  └────┬─────┘  └────┬─────┘  │dispatch  │      │                       │
+│  └───────┼─────────────┼────────└────┬─────┘──────┘                       │
+│          ▼             ▼             ▼                                     │
+│  ┌─────────────────── 主 CI 入口层 ──────────────────┐                     │
+│  │  ...                                              │                     │
+│  └───────────────────────────────────────────────────┘                     │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**只输出此章节，不要输出其他内容。**
+"""
+
+
+def _generate_round_3_arch_summary() -> str:
+    """Round 4: 架构评分（JSON 格式）"""
+    return """请输出架构评分 JSON。
+
+**输出格式**：必须是纯 JSON，不要添加任何解释。
+
+```json
+{
+  "scores": {
+    "architecture_design": {"score": 8, "rationale": "工作流按阶段清晰划分，依赖关系明确"},
+    "best_practices": {"score": 7, "rationale": "使用了缓存和矩阵构建，但缺少复用策略"},
+    "security": {"score": 6, "rationale": "缺少安全扫描步骤，密钥管理需加强"},
+    "maintainability": {"score": 7, "rationale": "脚本复用较好，但文档不够完整"},
+    "scalability": {"score": 6, "rationale": "支持多平台构建，但环境配置分散"}
+  }
+}
+```
+
+**评分标准（1-10分）**：
+- 9-10: 优秀，业界最佳实践，在大多数开源项目中属于Top 10%
+- 7-8: 良好，大部分实践到位，有少量改进空间
+- 5-6: 一般，基本实践到位，但有明显短板
+- 3-4: 较差，存在较多问题，需要系统性改进
+- 1-2: 很差，架构设计有严重问题，建议重构
+
+**严格要求**：
+1. 只输出 JSON，不要输出 "好的"、"以下是" 等文字
+2. 不要使用 Markdown 表格
+3. 确保 JSON 格式正确（引号、逗号、括号）
+4. scores 必须包含全部 5 个维度
+5. 每个 score 必须有 score 和 rationale 两个字段
+
+开始输出：
+"""
+
+
+def _generate_round_4_strength_patterns() -> str:
+    """Round 5: 优势架构模式（JSON 格式）"""
+    return """请输出优势架构模式 JSON。
+
+**输出格式**：必须是纯 JSON，不要添加任何解释。
+
+```json
+{
+  "strengths": [
+    {
+      "title": "矩阵构建策略",
+      "description": "使用矩阵策略支持多平台并行构建",
+      "evidence": "ci-workflow-pull-request.yml 使用 matrix 配置"
+    },
+    {
+      "title": "缓存优化",
+      "description": "完善的缓存配置加速构建",
+      "evidence": "配置了 pip、ccache 等多种缓存"
+    }
+  ]
+}
+```
+
+**要求**：
+1. 识别 2-5 个优势模式
+2. 每个包含 title、description、evidence 三个字段
+3. evidence 应引用具体的工作流或配置
+4. 只输出 JSON，不要其他内容
+
+开始输出：
+"""
+
+
+def _generate_round_5_problems() -> str:
+    """Round 6: 架构问题（JSON 格式）"""
+    return """请输出架构问题 JSON。
+
+**输出格式**：必须是纯 JSON，不要添加任何解释。
+
+```json
+{
+  "weaknesses": [
+    {
+      "title": "缺少安全扫描",
+      "description": "未配置 SAST/DAST 安全扫描",
+      "impact": "可能遗漏安全漏洞，增加安全风险",
+      "suggestion": "添加 CodeQL 或 Snyk 扫描"
+    }
+  ]
+}
+```
+
+**要求**：
+1. 识别 1-5 个问题
+2. 每个包含 title、description、impact、suggestion 四个字段
+3. impact 说明问题的后果，suggestion 提供改进建议
+4. 只输出 JSON，不要其他内容
+
+开始输出：
+"""
+
+
+def _generate_round_6_recommendations() -> str:
+    """Round 7: 改进建议（JSON 格式）"""
+    return """请输出改进建议 JSON。
+
+**输出格式**：必须是纯 JSON，不要添加任何解释。
+
+```json
+{
+  "recommendations": [
+    {"priority": "high", "content": "添加 SAST 安全扫描", "expected_benefit": "提高代码安全性"},
+    {"priority": "medium", "content": "使用 Reusable Workflow", "expected_benefit": "减少重复配置"},
+    {"priority": "low", "content": "完善文档注释", "expected_benefit": "提高可维护性"}
+  ]
+}
+```
+
+**要求**：
+1. priority 必须是 "high"、"medium" 或 "low"
+2. high 最多 2 条，medium 最多 3 条，low 适量
+3. content 是建议的具体内容
+4. expected_benefit 说明实施后的预期效果
+5. 只输出 JSON，不要其他内容
+
+开始输出：
+"""
+
+
+def _generate_round_7_call_tree() -> str:
+    """Round 8: 调用关系树"""
+    return """请输出【附录 - 工作流调用关系树】章节：
+
+## 附录
+
+### 工作流调用关系树
+
+项目CI/CD调用关系树
+├── 触发入口
+│   ├── push事件
+│   │   └── workflow1.yml
+│   ├── pull_request事件
+│   │   ├── workflow2.yml
+│   │   └── workflow3.yml
+│   └── schedule事件
+│       └── workflow4.yml
+│
+├── workflow1.yml (push触发)
+│   ├── Jobs:
+│   │   └── job1 → job2 → job3
+│   └── 调用:
+│       └── script1.py
+│
+└── ...
+
+**要求**：
+1. 使用树状结构展示完整的调用关系
+2. 包含触发条件、Job 依赖、脚本调用
+3. 只输出此章节，不要输出其他内容"""
+
+
+def _generate_round_8_json_data() -> str:
+    """Round 8: JSON 架构图数据"""
+    return """请输出【JSON 架构图数据】：
+
+<!-- ARCHITECTURE_JSON
+{
+  "layers": [
+    {
+      "id": "layer-1",
+      "name": "触发入口层",
+      "nodes": [
+        {
+          "id": "node-1-1",
+          "label": "push 事件",
+          "description": "代码推送到分支触发",
+          "detail_section": "阶段一：触发与入口"
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {"source": "node-1-2", "target": "node-2-1"}
+  ]
+}
+ARCHITECTURE_JSON -->
+
+**格式要求**：
+- `layers` 数组包含所有层级
+- 每个层必须有 `id`、`name`、`nodes` 三个字段
+- `nodes` 数组包含该层的所有节点
+- 每个节点必须有 `id`、`label`、`description`、`detail_section` 四个字段
+- `connections` 数组包含节点之间的连接，使用 `source` 和 `target` 字段
+- `id` 使用英文和连字符，如 `layer-1`、`node-1-1`
+- `label` 使用简短的中文名称
+- `description` 包含关键信息（触发条件、Job数量等）
+- `detail_section` 对应报告中的阶段标题
+
+**节点命名要求**：
+1. 工作流节点必须使用**完整的工作流文件名**（包含 .yml 后缀）
+   - 正确示例：`workflow-dispatch-two-stage-group-linux.yml`
+   - 正确示例：`ci-workflow-pull-request.yml`
+   - 错误示例：`two-stage-group-linux`（简短名称）
+   - 错误示例：`two-stage-group-linux.yml`（不存在的工作流）
+2. 触发类型节点使用触发条件名称（如 `push`、`workflow_dispatch`）
+3. 不要使用简短名称或缩写
+
+**层结构要求**：
+1. 第一层是触发入口层，节点是触发条件类型
+2. 后续层按 CI/CD 执行顺序排列
+3. 每个工作流只能出现在一个层中，不能重复
+
+**重要**：不要修改格式！不要添加额外字段！只输出 JSON 数据！"""
 
 
 def _generate_global_context(raw_data: Dict) -> str:

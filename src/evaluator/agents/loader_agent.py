@@ -1,20 +1,33 @@
 """Loader Agent - 下载远程项目"""
 from pathlib import Path
-from evaluator.skills import GitOperations, UrlParser
+from typing import Any, Dict
+from evaluator.skills import GitOperations
 from storage import StorageManager, ProjectMetadata
+from .base_agent import BaseAgent, AgentMeta
 
 
-class LoaderAgent:
+class LoaderAgent(BaseAgent):
     """项目加载 Agent"""
 
     DEFAULT_DOWNLOAD_DIR = "./downloaded_projects"
 
+    @classmethod
+    def describe(cls) -> AgentMeta:
+        return AgentMeta(
+            name="LoaderAgent",
+            description="下载/克隆远程项目，初始化存储目录",
+            category="entry",
+            inputs=["project_name", "project_url", "project_path", "should_download"],
+            outputs=["project_path", "clone_status", "storage_version_id", "storage_dir"],
+            dependencies=["InputAgent"],
+        )
+
     def __init__(self, download_dir: str | None = None, storage_manager: StorageManager | None = None):
+        super().__init__()
         self.download_dir = download_dir or self.DEFAULT_DOWNLOAD_DIR
         self.storage = storage_manager or StorageManager()
 
     def _init_storage(self, project_name: str, project_url: str | None = None, project_path: str | None = None) -> dict:
-        """初始化存储，创建版本目录"""
         display_name = self.storage._sanitize_name(project_name) if project_name else "unknown"
 
         index = self.storage._load_project_index()
@@ -24,14 +37,6 @@ class LoaderAgent:
 
         from storage.models import ProjectVersion
         version_id = ProjectVersion.generate_version_id(existing_versions)
-
-        metadata = {
-            "name": display_name,
-            "display_name": display_name,
-            "source_url": project_url,
-            "source_path": project_path,
-            "status": "analyzing",
-        }
 
         version_dir = self.storage._create_version_dir(display_name, version_id)
 
@@ -70,57 +75,53 @@ class LoaderAgent:
             "storage_dir": str(version_dir),
         }
 
-    def run(self, state: dict) -> dict:
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         project_url = state.get("project_url")
         project_name = state.get("project_name", "unknown-project")
         project_path = state.get("project_path")
+        errors = state.get("errors", [])
 
         storage_info = self._init_storage(project_name, project_url, project_path)
 
         if not state.get("should_download", False):
-            print("\n跳过下载，使用本地项目")
             return {
+                **state,
                 "current_step": "loader",
                 "clone_status": "skipped",
-                "errors": [],
                 **storage_info,
             }
 
         if not project_url:
             return {
+                **state,
                 "current_step": "loader",
                 "clone_status": "failed",
                 "clone_error": "未提供项目 URL",
-                "errors": ["未提供项目 URL"],
+                "errors": errors + ["未提供项目 URL"],
                 **storage_info,
             }
 
         download_path = Path(self.download_dir) / project_name
-        print(f"\n准备下载项目到: {download_path}")
 
         result = GitOperations.clone(project_url, str(download_path))
 
         if result["success"]:
-            print(f"\n✅ 项目下载成功!")
-            print(f"   路径: {result['path']}")
-
             return {
+                **state,
                 "project_path": result["path"],
                 "clone_status": "success",
                 "clone_error": None,
                 "current_step": "loader",
-                "errors": [],
                 **storage_info,
             }
         else:
             error_msg = result.get("error", "未知错误")
-            print(f"\n❌ 项目下载失败: {error_msg}")
-
             return {
+                **state,
                 "project_path": None,
                 "clone_status": "failed",
                 "clone_error": error_msg,
                 "current_step": "loader",
-                "errors": [f"克隆失败: {error_msg}"],
+                "errors": errors + [f"克隆失败: {error_msg}"],
                 **storage_info,
             }

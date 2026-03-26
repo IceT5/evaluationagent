@@ -4,8 +4,12 @@ import re
 import os
 import sys
 import time
+import signal
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict, Any
+from typing import TYPE_CHECKING, Optional, List, Tuple, Dict, Any
+
+if TYPE_CHECKING:
+    from evaluator.agents.intent_parser_agent import ParsedIntent
 
 from dotenv import load_dotenv
 
@@ -25,10 +29,38 @@ from evaluator.core import (
     get_storage_info,
 )
 from evaluator.core.types import AnalysisResult, ComparisonResult, ProjectInfo
+from evaluator.agents.intent_parser_agent import IntentParserAgent, Intent, ParsedIntent
+from evaluator.skills import UrlParser
+from evaluator.cli.context import ConversationContext, get_context
 from storage import StorageManager
+
+try:
+    from evaluator.llm import LLMClient
+    HAS_LLM = True
+except ImportError:
+    HAS_LLM = False
+    LLMClient = None
+
+try:
+    from evaluator.core.interrupt import interrupt_controller, InterruptException
+except ImportError:
+    interrupt_controller = None
+    InterruptException = Exception
 
 
 from prompt_toolkit.completion import Completer, Completion
+
+
+def setup_interrupt_handler():
+    """设置中断信号处理器"""
+    if interrupt_controller is None:
+        return
+    
+    def handler(signum, frame):
+        print("\n\n⚠️  正在中断...")
+        interrupt_controller.interrupt("用户按下 Ctrl+C")
+    
+    signal.signal(signal.SIGINT, handler)
 
 
 class CommandCompleter(Completer):
@@ -68,6 +100,9 @@ class CommandParser:
         "show": r"^/show(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
         "delete": r"^/delete(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
         "analyzers": r"^/analyzers$",
+        "insights": r"^/insights(?:\s+(?P<name>.+))?$",
+        "recommend": r"^/recommend(?:\s+(?P<name>.+))?$",
+        "similar": r"^/similar(?:\s+(?P<name>.+))?$",
         "help": r"^/help(?:\s+(?P<topic>.+))?$",
         "version": r"^/version$",
         "quit": r"^/(?:quit|exit)$",
@@ -92,12 +127,51 @@ class CommandParser:
 
 
 class CommandHandler:
-    """命令处理器"""
+    """命令处理器
     
-    VERSION = "0.1.0"
+    架构原则:
+    1. 核心命令(analyze/compare)通过LangGraph执行
+    2. 简单命令(list/show/delete)直接调用core函数
+    3. 智能Agent命令(insights/recommend/similar)通过BackgroundTasks执行
+    """
     
-    def __init__(self, output_func=None):
+    VERSION = "0.2.0"
+    
+    def __init__(self, output_func=None, llm_client=None):
+        """
+        Args:
+            output_func: 输出函数
+            llm_client: LLM 客户端
+        """
         self.output_func = output_func or print
+        self.llm_client = llm_client
+        self.intent_parser = IntentParserAgent(llm=llm_client) if llm_client else IntentParserAgent()
+        self.context = get_context()
+        self._graph = None
+        self._background = None
+    
+    @property
+    def graph(self):
+        """延迟加载LangGraph实例"""
+        if self._graph is None:
+            from evaluator.core.graphs import create_main_graph
+            llm_config = None
+            if self.llm_client:
+                llm_config = {
+                    "api_key": os.getenv("OPENAI_API_KEY"),
+                    "base_url": os.getenv("OPENAI_BASE_URL"),
+                    "model": getattr(self.llm_client, 'model', None),
+                }
+            self._graph = create_main_graph(llm_config=llm_config)
+        return self._graph
+    
+    @property
+    def background(self):
+        """延迟加载后台任务管理器"""
+        if self._background is None:
+            from evaluator.core.background import background
+            self._background = background
+        return self._background
     
     def handle(self, command: str, args: Dict[str, Any]) -> bool:
         """处理命令，返回是否退出"""
@@ -108,6 +182,9 @@ class CommandHandler:
             "show": self._handle_show,
             "delete": self._handle_delete,
             "analyzers": self._handle_analyzers,
+            "insights": self._handle_insights,
+            "recommend": self._handle_recommend,
+            "similar": self._handle_similar,
             "help": self._handle_help,
             "version": self._handle_version,
             "quit": self._handle_quit,
@@ -122,67 +199,107 @@ class CommandHandler:
         return False
     
     def _handle_analyze(self, args: Dict[str, Any]) -> bool:
-        """处理 /analyze 命令"""
+        """处理 /analyze 命令 - 使用 LangGraph 统一工作流"""
         analyzer_type = args.get("type") or "cicd"
-        path = args.get("path") or ""
+        user_input = args.get("path") or ""
         
-        if not path:
-            self.output_func("用法: /analyze [type] <path>")
+        if not user_input:
+            self.output_func("用法: /analyze [type] <path|url>")
             self.output_func("  type: 分析类型 (默认: cicd)")
-            self.output_func("  path: 项目路径")
+            self.output_func("  path: 本地项目路径")
+            self.output_func("  url:  GitHub/GitLab 仓库地址")
+            self.output_func("")
+            self.output_func("示例:")
+            self.output_func("  /analyze ./my-project")
+            self.output_func("  /analyze cicd https://github.com/owner/repo")
             return False
         
-        # 验证路径
-        project_path = Path(path)
-        if not project_path.exists():
-            self.output_func(f"错误: 路径不存在: {path}")
-            return False
-        
-        if not project_path.is_dir():
-            self.output_func(f"错误: 路径不是目录: {path}")
-            return False
-        
-        # 构建 LLM 配置
         llm_config = None
         api_key = os.getenv("OPENAI_API_KEY")
         if api_key:
-            llm_config = {
-                "api_key": api_key,
-                "base_url": os.getenv("OPENAI_BASE_URL"),
-            }
+            llm_config = {"api_key": api_key, "base_url": os.getenv("OPENAI_BASE_URL")}
         
-        self.output_func(f"\n开始分析: {project_path.name}")
+        known_projects = [p.name for p in list_projects()]
+        
+        initial_state = {
+            "user_input": user_input,
+            "intent": "analyze",
+            "params": {
+                "project": user_input,
+                "analyzer_type": analyzer_type,
+            },
+            "orchestrator_decision": {
+                "intent": "analyze",
+                "params": {"project": user_input, "analyzer_type": analyzer_type},
+                "confidence": 1.0,
+                "needs_clarification": False,
+                "next_step": "input",
+            },
+            "llm_config": llm_config or {},
+            "known_projects": known_projects,
+            "context": {"last_project": self.context.last_project},
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+        }
+        
+        self.output_func(f"\n开始分析: {user_input}")
         self.output_func("-" * 50)
+        self.output_func("  [使用 LangGraph 工作流]")
+        
+        if interrupt_controller:
+            interrupt_controller.reset()
         
         start_time = time.time()
         
-        result = analyze_project(
-            path=str(project_path),
-            types=[analyzer_type] if analyzer_type else ["cicd"],
-            llm_config=llm_config,
-        )
+        final_state = None
+        try:
+            final_state = self.graph.invoke(initial_state)
+        except InterruptException as e:
+            elapsed = time.time() - start_time
+            self.output_func(f"\n⚠️  任务已中断")
+            self.output_func(f"  原因: {e}")
+            self.output_func(f"  已运行时间: {elapsed:.1f}s")
+            if interrupt_controller:
+                summary = interrupt_controller.get_interrupt_summary()
+                if summary.get("current_node"):
+                    self.output_func(f"  当前节点: {summary['current_node']}")
+                if summary.get("completed_nodes"):
+                    nodes_str = ", ".join(summary["completed_nodes"])
+                    self.output_func(f"  已完成节点: {nodes_str}")
+            return False
         
         elapsed = time.time() - start_time
         
-        if result.success:
-            self.output_func(f"\n[OK] 分析完成")
-            self.output_func(f"  项目: {result.project_name}")
-            self.output_func(f"  版本: {result.version_id}")
-            self.output_func(f"  耗时: {elapsed:.1f}s")
-            
-            if result.stats:
-                stats = result.stats
-                self.output_func(f"  工作流: {stats.get('workflows_count', 0)}")
-                self.output_func(f"  Jobs: {stats.get('jobs_count', 0)}")
-        else:
+        errors = final_state.get("errors", [])
+        if errors:
             self.output_func(f"\n[FAIL] 分析失败")
-            for err in result.errors:
+            for err in errors:
                 self.output_func(f"  - {err}")
+            return False
+        
+        project_name = final_state.get("project_name") or final_state.get("display_name") or user_input
+        version_id = final_state.get("storage_version_id", "N/A")
+        cicd_analysis = final_state.get("cicd_analysis", {})
+        
+        self.output_func(f"\n[OK] 分析完成")
+        self.output_func(f"  项目: {project_name}")
+        self.output_func(f"  版本: {version_id}")
+        self.output_func(f"  耗时: {elapsed:.1f}s")
+        
+        if cicd_analysis:
+            self.output_func(f"  工作流: {cicd_analysis.get('workflows_count', 0)}")
+            self.output_func(f"  Jobs: {cicd_analysis.get('jobs_count', 0)}")
+        
+        if final_state.get("report_html"):
+            self.output_func(f"  报告: {final_state.get('report_html')}")
+        
+        self.context.last_project = project_name
         
         return False
     
     def _handle_compare(self, args: Dict[str, Any]) -> bool:
-        """处理 /compare 命令"""
+        """处理 /compare 命令 - 使用 LangGraph 统一工作流"""
         project_a = args.get("project_a") or ""
         project_b = args.get("project_b") or ""
         dimensions_str = args.get("dimensions") or ""
@@ -190,9 +307,6 @@ class CommandHandler:
         if not project_a or not project_b:
             self.output_func("用法: /compare <project_a> <project_b> [--dim dimensions]")
             return False
-        
-        self.output_func(f"\n开始对比: {project_a} vs {project_b}")
-        self.output_func("-" * 50)
         
         dimensions = None
         if dimensions_str:
@@ -207,64 +321,124 @@ class CommandHandler:
             }
         else:
             self.output_func("  警 未配置 LLM API Key，将使用规则分析")
-
-        storage = StorageManager()
-        result = compare_projects(
-            project_a=project_a,
-            project_b=project_b,
-            dimensions=dimensions,
-            llm_config=llm_config,
-        )
         
-        if result.success:
+        initial_state = {
+            "user_input": f"/compare {project_a} {project_b}",
+            "intent": "compare",
+            "params": {
+                "project_a": project_a,
+                "project_b": project_b,
+                "dimensions": dimensions,
+            },
+            "orchestrator_decision": {
+                "intent": "compare",
+                "params": {"project_a": project_a, "project_b": project_b, "dimensions": dimensions},
+                "confidence": 1.0,
+                "needs_clarification": False,
+                "next_step": "compare",
+            },
+            "llm_config": llm_config or {},
+            "known_projects": [p.name for p in list_projects()],
+            "context": {"last_project": self.context.last_project},
+            "project_a": project_a,
+            "project_b": project_b,
+            "dimensions": dimensions,
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+        }
+        
+        self.output_func(f"\n开始对比: {project_a} vs {project_b}")
+        self.output_func("-" * 50)
+        self.output_func("  [使用 LangGraph 工作流]")
+        
+        start_time = time.time()
+        
+        final_state = self.graph.invoke(initial_state)
+        elapsed = time.time() - start_time
+        
+        errors = final_state.get("errors", [])
+        if errors:
+            self.output_func(f"\n[FAIL] 对比失败")
+            for err in errors:
+                self.output_func(f"  - {err}")
+            return False
+        
+        comparison_result = final_state.get("comparison_result", {})
+        
+        if comparison_result:
             self.output_func(f"\n[OK] 对比完成")
-            self.output_func(f"  对比ID: {result.comparison_id}")
+            self.output_func(f"  耗时: {elapsed:.1f}s")
             
-            self.output_func("\n维度得分:")
-            for dim in result.dimensions:
-                winner = dim.get("winner", "N/A")
-                winner_name = project_a if winner == "A" else (project_b if winner == "B" else "平手")
-                self.output_func(f"  {dim['name']}: {project_a}={dim['score_a']:.0f} | "
-                               f"{project_b}={dim['score_b']:.0f} | 胜出: {winner_name}")
+            dimensions_data = comparison_result.get("dimensions", [])
+            if dimensions_data:
+                self.output_func("\n维度得分:")
+                for dim in dimensions_data:
+                    winner = dim.get("winner", "N/A")
+                    winner_name = project_a if winner == "A" else (project_b if winner == "B" else "平手")
+                    self.output_func(f"  {dim['name']}: {project_a}={dim['score_a']:.0f} | "
+                                   f"{project_b}={dim['score_b']:.0f} | 胜出: {winner_name}")
             
-            if result.semantic_diff:
+            semantic_diff = comparison_result.get("semantic_diff")
+            if semantic_diff:
                 self.output_func("\n" + "=" * 50)
                 self.output_func("LLM 架构分析:")
                 self.output_func("-" * 50)
-                self.output_func(result.semantic_diff)
+                self.output_func(semantic_diff)
                 self.output_func("=" * 50)
             
-            if result.summary:
+            summary = comparison_result.get("summary")
+            if summary:
                 self.output_func("\n总结:")
-                self.output_func(result.summary)
+                self.output_func(summary)
             
-            if result.recommendations:
+            recommendations = comparison_result.get("recommendations", [])
+            if recommendations:
                 self.output_func("\n建议:")
-                for i, rec in enumerate(result.recommendations[:5], 1):
+                for i, rec in enumerate(recommendations[:5], 1):
                     self.output_func(f"  {i}. {rec}")
-
-            comp_dir = storage.data_dir / "comparisons" / result.comparison_id
-            self.output_func(f"\n报告已保存:")
-            self.output_func(f"  Markdown: {comp_dir / 'compare.md'}")
-            self.output_func(f"  HTML:     {comp_dir / 'compare.html'}")
+            
+            comp_dir = final_state.get("comparison_dir")
+            if comp_dir:
+                self.output_func(f"\n报告已保存:")
+                self.output_func(f"  {comp_dir}")
         else:
             self.output_func(f"\n[FAIL] 对比失败")
-            self.output_func(f"  {result.summary}")
+            self.output_func(f"  未获取到对比结果")
         
         return False
     
     def _handle_list(self, args: Dict[str, Any]) -> bool:
-        """处理 /list 命令"""
-        show_all = "--all" in args or args.get("all") == "--all"
+        """处理 /list 命令 - 使用 LangGraph"""
+        known_projects = [p.name for p in list_projects()]
+        context = {"last_project": self.context.last_project}
         
-        info = get_storage_info()
-        projects = list_projects()
+        initial_state = {
+            "user_input": "/list",
+            "intent": "list",
+            "params": args,
+            "known_projects": known_projects,
+            "context": context,
+            "orchestrator_decision": {
+                "intent": "list",
+                "next_step": "list_handler",
+            },
+            "errors": [],
+            "warnings": [],
+            "completed_steps": [],
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        list_result = final_state.get("list_result", {})
+        storage_info = list_result.get("storage_info", {})
+        projects = list_result.get("projects", [])
         
         self.output_func(f"\n存储概览")
         self.output_func("-" * 50)
-        self.output_func(f"  项目数量: {info['project_count']}")
-        self.output_func(f"  对比数量: {info['comparison_count']}")
-        self.output_func(f"  总大小: {info['total_size_mb']} MB")
+        self.output_func(f"  项目数量: {storage_info.get('project_count', 0)}")
+        self.output_func(f"  对比数量: {storage_info.get('comparison_count', 0)}")
+        self.output_func(f"  总大小: {storage_info.get('total_size_mb', 0)} MB")
         
         if projects:
             self.output_func(f"\n已保存的项目:")
@@ -272,12 +446,9 @@ class CommandHandler:
             self.output_func("-" * 60)
             
             for p in projects:
-                detail = get_project(p.name)
-                workflows = 0
-                if detail and detail.versions:
-                    workflows = detail.versions[-1].get("workflows", 0) if detail.versions else 0
-                display_name = p.display_name or p.name
-                latest_version = p.latest_version or "N/A"
+                display_name = p.get("display_name") or p.get("name", "N/A")
+                latest_version = p.get("latest_version") or "N/A"
+                workflows = p.get("workflows", 0)
                 self.output_func(f"{display_name:<30} {latest_version:<15} {workflows}")
         else:
             self.output_func("\n暂无已保存的项目")
@@ -285,33 +456,54 @@ class CommandHandler:
         return False
     
     def _handle_show(self, args: Dict[str, Any]) -> bool:
-        """处理 /show 命令"""
+        """处理 /show 命令 - 使用 LangGraph"""
         name = args.get("name") or ""
-        version = args.get("version")
         
         if not name:
             self.output_func("用法: /show <name> [--version version_id]")
             return False
         
-        detail = get_project(name)
+        known_projects = [p.name for p in list_projects()]
+        context = {"last_project": self.context.last_project}
         
-        if not detail:
+        initial_state = {
+            "user_input": f"/show {name}",
+            "intent": "info",
+            "params": {"project": name, "version": args.get("version")},
+            "known_projects": known_projects,
+            "context": context,
+            "orchestrator_decision": {
+                "intent": "info",
+                "next_step": "info_handler",
+            },
+            "project_name": name,
+            "errors": [],
+            "warnings": [],
+            "completed_steps": [],
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        info_result = final_state.get("info_result", {})
+        
+        if not info_result.get("success"):
             self.output_func(f"项目不存在: {name}")
             return False
         
-        self.output_func(f"\n项目详情: {detail.display_name}")
+        self.output_func(f"\n项目详情: {info_result.get('display_name', name)}")
         self.output_func("-" * 50)
-        self.output_func(f"  名称: {detail.name}")
-        self.output_func(f"  版本数: {len(detail.versions)}")
+        self.output_func(f"  名称: {info_result.get('name', name)}")
+        self.output_func(f"  版本数: {info_result.get('version_count', 0)}")
         
-        if detail.source_url:
-            self.output_func(f"  来源: {detail.source_url}")
-        if detail.source_path:
-            self.output_func(f"  路径: {detail.source_path}")
+        if info_result.get("source_url"):
+            self.output_func(f"  来源: {info_result.get('source_url')}")
+        if info_result.get("source_path"):
+            self.output_func(f"  路径: {info_result.get('source_path')}")
         
-        if detail.versions:
+        versions = info_result.get("versions", [])
+        if versions:
             self.output_func(f"\n版本历史:")
-            for v in reversed(detail.versions):
+            for v in reversed(versions):
                 analyzed = v.get("analyzed_at", "")
                 if len(analyzed) > 19:
                     analyzed = analyzed[:19]
@@ -322,7 +514,7 @@ class CommandHandler:
         return False
     
     def _handle_delete(self, args: Dict[str, Any]) -> bool:
-        """处理 /delete 命令"""
+        """处理 /delete 命令 - 使用 LangGraph"""
         name = args.get("name") or ""
         version = args.get("version")
         
@@ -331,13 +523,176 @@ class CommandHandler:
             self.output_func("  注意: 删除后将无法恢复")
             return False
         
-        if delete_project(name, version):
+        known_projects = [p.name for p in list_projects()]
+        context = {"last_project": self.context.last_project}
+        
+        initial_state = {
+            "user_input": f"/delete {name}",
+            "intent": "delete",
+            "params": {"project": name, "version": version},
+            "known_projects": known_projects,
+            "context": context,
+            "orchestrator_decision": {
+                "intent": "delete",
+                "next_step": "delete_handler",
+            },
+            "project_name": name,
+            "errors": [],
+            "warnings": [],
+            "completed_steps": [],
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        delete_result = final_state.get("delete_result", {})
+        
+        if delete_result.get("success"):
             if version:
                 self.output_func(f"[OK] 已删除项目 {name} 的版本 {version}")
             else:
                 self.output_func(f"[OK] 已删除项目 {name} 及其所有版本")
         else:
             self.output_func(f"项目不存在: {name}")
+        
+        return False
+    
+    def _handle_insights(self, args: Dict[str, Any]) -> bool:
+        """处理 /insights 命令 - 显示智能分析结果"""
+        project_name = args.get("name") or self.context.last_project
+        
+        if not project_name:
+            self.output_func("用法: /insights [project_name]")
+            self.output_func("  显示项目的智能分析结果（改进建议、相似项目等）")
+            return False
+        
+        from storage import StorageManager
+        storage = StorageManager()
+        
+        version_dir = storage.get_latest_version_dir(project_name)
+        if not version_dir:
+            self.output_func(f"项目不存在: {project_name}")
+            return False
+        
+        insights = self.background.load_insights(project_name, str(version_dir))
+        
+        if insights:
+            self.output_func(f"\n智能分析结果: {project_name}")
+            self.output_func("=" * 50)
+            
+            if insights.recommendations:
+                self.output_func(f"\n改进建议 ({len(insights.recommendations)} 项):")
+                for rec in insights.recommendations[:5]:
+                    priority = rec.get('priority', 'medium')
+                    priority_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
+                    self.output_func(f"  {priority_icon} [{priority.upper()}] {rec.get('title', '')}")
+                    if rec.get('action'):
+                        self.output_func(f"      → {rec.get('action')}")
+            
+            if insights.similar_projects:
+                self.output_func(f"\n相似项目 ({len(insights.similar_projects)} 个):")
+                for sim in insights.similar_projects[:5]:
+                    name = sim.get('name', '')
+                    similarity = sim.get('similarity', 0)
+                    self.output_func(f"  • {name} (相似度: {similarity:.0%})")
+            
+            if insights.quick_wins:
+                self.output_func(f"\n快速改进项:")
+                for qw in insights.quick_wins[:3]:
+                    self.output_func(f"  ⚡ {qw.get('title', '')}")
+                    self.output_func(f"     投入: {qw.get('effort', 'N/A')} | 收益: {qw.get('impact', 'N/A')}")
+            
+            if insights.reflection_result:
+                refl = insights.reflection_result
+                self.output_func(f"\n执行分析:")
+                self.output_func(f"  成功率: {refl.get('success_rate', 0):.0%}")
+                self.output_func(f"  平均耗时: {refl.get('avg_duration', 0):.1f}s")
+                if refl.get('bottlenecks'):
+                    self.output_func(f"  瓶颈: {refl['bottlenecks'][0]}")
+            
+            self.output_func(f"\n生成时间: {insights.generated_at}")
+        else:
+            status = self.background.get_status(project_name)
+            if status and status["status"] == "running":
+                self.output_func("智能分析正在进行中，请稍后再试...")
+            else:
+                self.output_func(f"未找到智能分析结果")
+                self.output_func(f"提示: 先执行 /analyze 命令，分析完成后会自动生成智能结果")
+        
+        return False
+    
+    def _handle_recommend(self, args: Dict[str, Any]) -> bool:
+        """处理 /recommend 命令 - 显示改进建议"""
+        project_name = args.get("name") or self.context.last_project
+        
+        if not project_name:
+            self.output_func("用法: /recommend [project_name]")
+            self.output_func("  显示项目的改进建议")
+            return False
+        
+        from storage import StorageManager
+        storage = StorageManager()
+        version_dir = storage.get_latest_version_dir(project_name)
+        
+        insights = self.background.load_insights(project_name, str(version_dir) if version_dir else None)
+        
+        if insights and insights.recommendations:
+            self.output_func(f"\n改进建议: {project_name}")
+            self.output_func("=" * 50)
+            
+            for i, rec in enumerate(insights.recommendations, 1):
+                priority = rec.get('priority', 'medium')
+                self.output_func(f"\n{i}. [{priority.upper()}] {rec.get('title', '')}")
+                if rec.get('description'):
+                    self.output_func(f"   {rec.get('description')}")
+                if rec.get('action'):
+                    self.output_func(f"   → 操作: {rec.get('action')}")
+                if rec.get('effort'):
+                    self.output_func(f"   → 投入: {rec.get('effort')}")
+        else:
+            status = self.background.get_status(project_name)
+            if status and status["status"] == "running":
+                self.output_func("正在生成建议，请稍后...")
+            else:
+                self.output_func(f"未找到改进建议，请先执行 /analyze")
+        
+        return False
+    
+    def _handle_similar(self, args: Dict[str, Any]) -> bool:
+        """处理 /similar 命令 - 显示相似项目"""
+        project_name = args.get("name") or self.context.last_project
+        
+        if not project_name:
+            self.output_func("用法: /similar [project_name]")
+            self.output_func("  显示与项目相似的其他项目")
+            return False
+        
+        from storage import StorageManager
+        storage = StorageManager()
+        version_dir = storage.get_latest_version_dir(project_name)
+        
+        insights = self.background.load_insights(project_name, str(version_dir) if version_dir else None)
+        
+        if insights and insights.similar_projects:
+            self.output_func(f"\n相似项目: {project_name}")
+            self.output_func("=" * 50)
+            
+            for sim in insights.similar_projects:
+                name = sim.get('name', '')
+                similarity = sim.get('similarity', 0)
+                reason = sim.get('reason', '')
+                
+                self.output_func(f"\n• {name} ({similarity:.0%})")
+                if reason:
+                    self.output_func(f"  原因: {reason}")
+                
+                if sim.get('suggest_compare'):
+                    self.output_func(f"  → 建议对比: /compare {project_name} {name}")
+        else:
+            status = self.background.get_status(project_name)
+            if status and status["status"] == "running":
+                self.output_func("正在分析相似项目，请稍后...")
+            else:
+                self.output_func(f"未找到相似项目，请先执行 /analyze")
         
         return False
     
@@ -377,6 +732,37 @@ class CommandHandler:
             self.output_func("  /compare project-a project-b")
             self.output_func("  /compare project-a project-b --dim complexity,best_practices")
             self.output_func("  (默认使用 LLM 进行语义分析)")
+        elif topic == "insights":
+            self.output_func("\n/insights 命令")
+            self.output_func("-" * 50)
+            self.output_func("用法: /insights [project_name]")
+            self.output_func("")
+            self.output_func("显示项目的智能分析结果，包括：")
+            self.output_func("  - 改进建议")
+            self.output_func("  - 相似项目")
+            self.output_func("  - 快速改进项")
+            self.output_func("  - 执行分析")
+            self.output_func("")
+            self.output_func("示例:")
+            self.output_func("  /insights cccl")
+        elif topic == "recommend":
+            self.output_func("\n/recommend 命令")
+            self.output_func("-" * 50)
+            self.output_func("用法: /recommend [project_name]")
+            self.output_func("")
+            self.output_func("显示项目的改进建议")
+            self.output_func("")
+            self.output_func("示例:")
+            self.output_func("  /recommend cccl")
+        elif topic == "similar":
+            self.output_func("\n/similar 命令")
+            self.output_func("-" * 50)
+            self.output_func("用法: /similar [project_name]")
+            self.output_func("")
+            self.output_func("显示与项目相似的其他项目")
+            self.output_func("")
+            self.output_func("示例:")
+            self.output_func("  /similar cccl")
         elif topic == "list":
             self.output_func("\n/list 命令")
             self.output_func("-" * 50)
@@ -416,6 +802,15 @@ class CommandHandler:
   /delete <name> 删除项目
               示例: /delete my-project
 
+  /insights [n]  显示智能分析结果
+              示例: /insights cccl
+
+  /recommend [n] 显示改进建议
+              示例: /recommend cccl
+
+  /similar [n]   显示相似项目
+              示例: /similar cccl
+
   /analyzers     列出可用的分析器
 
   /help [topic]  显示帮助
@@ -442,6 +837,71 @@ class CommandHandler:
         """处理清除屏幕命令"""
         os.system("cls" if os.name == "nt" else "clear")
         return False
+    
+    def route_intent(self, parsed: "ParsedIntent") -> bool:
+        """根据解析的意图路由到处理函数
+        
+        Args:
+            parsed: 解析后的意图
+        
+        Returns:
+            是否退出
+        """
+        intent = parsed.intent
+        params = parsed.params
+        
+        # 解析代词引用（如 "这个项目"、"它"）
+        if params.get("project"):
+            resolved = self.context.resolve_reference(params["project"])
+            if resolved:
+                params["project"] = resolved
+        
+        if params.get("project_a"):
+            resolved = self.context.resolve_reference(params["project_a"])
+            if resolved:
+                params["project_a"] = resolved
+        
+        if params.get("project_b"):
+            resolved = self.context.resolve_reference(params["project_b"])
+            if resolved:
+                params["project_b"] = resolved
+        
+        result = None
+        
+        if intent == Intent.ANALYZE:
+            result = self._handle_analyze({"path": params.get("project") or params.get("url", "")})
+        
+        elif intent == Intent.COMPARE:
+            result = self._handle_compare({
+                "project_a": params.get("project_a", ""),
+                "project_b": params.get("project_b", ""),
+            })
+        
+        elif intent == Intent.LIST:
+            result = self._handle_list({})
+        
+        elif intent == Intent.INFO:
+            result = self._handle_show({"name": params.get("project", "")})
+        
+        elif intent == Intent.HELP:
+            result = self._handle_help({})
+        
+        elif intent == Intent.DELETE:
+            result = self._handle_delete({"name": params.get("project", "")})
+        
+        else:
+            self.output_func(f"无法识别的意图")
+            return False
+        
+        # 更新对话上下文
+        self.context.add_turn(
+            user_input=parsed.raw_input,
+            intent=intent.value,
+            params=params,
+            result=result,
+        )
+        
+        return result
 
 
 def run_cli():
@@ -450,8 +910,15 @@ def run_cli():
         from prompt_toolkit import PromptSession
         from prompt_toolkit.history import InMemoryHistory
         
-        # 命令补全（只有输入 / 时才显示）
-        commands = ["analyze", "compare", "list", "show", "delete", "analyzers", "help", "version", "quit", "exit", "clear"]
+        llm_client = None
+        if HAS_LLM and LLMClient and os.getenv("OPENAI_API_KEY"):
+            try:
+                llm_client = LLMClient()
+            except Exception:
+                pass
+        
+        commands = ["analyze", "compare", "list", "show", "delete", "analyzers", 
+                   "insights", "recommend", "similar", "help", "version", "quit", "exit", "clear"]
         completer = CommandCompleter(commands)
         
         session = PromptSession(
@@ -460,13 +927,19 @@ def run_cli():
             history=InMemoryHistory(),
         )
         
-        handler = CommandHandler()
+        handler = CommandHandler(llm_client=llm_client)
+        
+        setup_interrupt_handler()
         
         print(f"""
 ╭──────────────────────────────────────────────────────────────╮
 │  eval-agent v1.0.0 - CI/CD 架构评估工具                        │
 ╰──────────────────────────────────────────────────────────────╯
-输入 / 查看所有命令
+支持自然语言输入，例如：
+  - "分析 cccl 项目"
+  - "对比 cccl 和 TensorRT-LLM"
+  - "有哪些已分析的项目"
+输入 / 查看传统命令
 """)
         
         while True:
@@ -476,17 +949,28 @@ def run_cli():
                 print("\n再见!")
                 break
             
-            parser = CommandParser()
-            command, args = parser.parse(text)
-            
-            if not command:
-                # 不是命令，显示提示
-                if text.strip():
-                    print(f"未知输入: {text}")
-                    print("输入 / 查看所有命令")
+            text = text.strip()
+            if not text:
                 continue
             
-            should_quit = handler.handle(command, args)
+            if text.startswith('/'):
+                parser = CommandParser()
+                command, args = parser.parse(text)
+                if command:
+                    should_quit = handler.handle(command, args)
+                    if should_quit:
+                        break
+                continue
+            
+            known_projects = [p.name for p in list_projects()]
+            context = {"last_project": handler.context.last_project}
+            parsed = handler.intent_parser.parse(text, known_projects, context)
+            
+            if parsed.needs_clarification and parsed.confidence < 0.5:
+                print(f"\n💡 {parsed.clarification_question}")
+                continue
+            
+            should_quit = handler.route_intent(parsed)
             if should_quit:
                 break
     
@@ -500,13 +984,26 @@ def run_cli():
 
 def run_cli_simple():
     """简单的 CLI（无 prompt_toolkit）"""
-    handler = CommandHandler()
+    llm_client = None
+    if HAS_LLM and LLMClient and os.getenv("OPENAI_API_KEY"):
+        try:
+            llm_client = LLMClient()
+        except Exception:
+            pass
+    
+    handler = CommandHandler(llm_client=llm_client)
+    
+    setup_interrupt_handler()
     
     print(f"""
-╭──────────────────────────────────────────────────────────────╮
+╭──────────────────────────────────────────────────────────────┐
 │  eval-agent v1.0.0 - CI/CD 架构评估工具                        │
-╰──────────────────────────────────────────────────────────────╯
-输入 / 查看所有命令
+╰──────────────────────────────────────────────────────────────┘
+支持自然语言输入，例如：
+  - "分析 cccl 项目"
+  - "对比 cccl 和 TensorRT-LLM"
+  - "有哪些已分析的项目"
+输入 / 查看传统命令
 """)
     
     while True:
@@ -516,17 +1013,27 @@ def run_cli_simple():
             print("\n再见!")
             break
         
-        parser = CommandParser()
-        command, args = parser.parse(text)
-        
-        if not command:
-            # 不是命令，显示提示
-            if text:
-                print(f"未知输入: {text}")
-                print("输入 / 查看所有命令")
+        if not text:
             continue
         
-        should_quit = handler.handle(command, args)
+        if text.startswith('/'):
+            parser = CommandParser()
+            command, args = parser.parse(text)
+            if command:
+                should_quit = handler.handle(command, args)
+                if should_quit:
+                    break
+            continue
+        
+        known_projects = [p.name for p in list_projects()]
+        context = {"last_project": handler.context.last_project}
+        parsed = handler.intent_parser.parse(text, known_projects, context)
+        
+        if parsed.needs_clarification and parsed.confidence < 0.5:
+            print(f"\n{parsed.clarification_question}")
+            continue
+        
+        should_quit = handler.route_intent(parsed)
         if should_quit:
             break
 

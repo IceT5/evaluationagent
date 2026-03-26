@@ -103,7 +103,32 @@ class StorageManager:
     def get_project_metadata(self, name: str) -> Optional[ProjectMetadata]:
         index = self._load_project_index()
         return index.get_project(name)
-
+    
+    def get_latest_version_dir(self, project_name: str) -> Optional[Path]:
+        """获取项目的最新版本目录
+        
+        Returns:
+            Path 或 None（如果项目不存在）
+        """
+        return self.get_version_dir(project_name, None)
+    
+    def get_version_dir(self, project_name: str, version: Optional[str] = None) -> Optional[Path]:
+        """获取项目的指定版本目录
+        
+        Args:
+            project_name: 项目名称
+            version: 版本号，None 表示最新版本
+        
+        Returns:
+            Path 或 None（如果项目不存在或版本不存在）
+        """
+        if not self.project_exists(project_name):
+            return None
+        try:
+            return self._get_version_dir(project_name, version)
+        except ValueError:
+            return None
+    
     def _list_versions(self, project_name: str) -> list[str]:
         project_dir = self._get_project_dir(project_name)
         if not project_dir.exists():
