@@ -92,12 +92,16 @@ class ReporterAgent(BaseAgent):
             print(f"  读取到 {len(architecture_data['layers'])} 个架构层")
         
         workflow_details = self._extract_workflow_details(md_content)
-        print(f"  提取到 {len(workflow_details)} 个工作流详情")
+        unique_workflows = len([k for k in workflow_details.keys() if k.endswith('.yml')])
+        print(f"  提取到 {unique_workflows} 个工作流详情")
         
         overview = self._extract_overview(md_content)
         appendix = self._extract_appendix(md_content)
         findings = self._extract_findings(md_content)
-        scripts_section = self._generate_scripts_section(ci_data_path)
+        # 优先从 CI_ARCHITECTURE.md 提取脚本目录索引（包含关键配置）
+        scripts_section = self._extract_scripts_section_from_md(md_content)
+        if not scripts_section:
+            scripts_section = self._generate_scripts_section(ci_data_path)
         statistics = self._generate_statistics(architecture_data, workflow_details, ci_data_path)
         
         review_summary = self._generate_review_summary(
@@ -172,9 +176,16 @@ class ReporterAgent(BaseAgent):
     
     def _extract_findings(self, content: str) -> str:
         """提取关键发现和建议"""
-        match = re.search(r'^##\s+.*发现.*建议\s*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
+        match = re.search(r'^##\s+[^\n]*发现[^\n]*建议[^\n]*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
         if match:
             return f"## 关键发现和建议{match.group(1)}"
+        return ""
+    
+    def _extract_scripts_section_from_md(self, content: str) -> str:
+        """从 Markdown 内容中提取脚本目录索引章节"""
+        match = re.search(r'^##\s+脚本目录索引\s*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
+        if match:
+            return f"## 脚本目录索引{match.group(1)}"
         return ""
     
     def _extract_workflow_details(self, content: str) -> dict:
@@ -512,7 +523,7 @@ class ReporterAgent(BaseAgent):
                     <button class="toggle-btn" data-target="scripts-content">折叠</button>
                 </div>
                 <div id="scripts-content" class="section-content">
-                    {self._md_to_html(scripts_section.replace('## 脚本目录索引', '').strip()) if scripts_section else '<p>暂无脚本信息</p>'}
+                    {self._generate_scripts_html(scripts_section)}
                 </div>
             </section>
             
@@ -739,6 +750,8 @@ class ReporterAgent(BaseAgent):
             padding: 20px 30px 60px;
             background: #fff;
             min-height: 100vh;
+            overflow-x: hidden;
+            max-width: calc(100vw - 280px);
         }
         
         /* 章节样式 */
@@ -777,6 +790,7 @@ class ReporterAgent(BaseAgent):
         .toggle-btn:hover { background: #e0e0e0; color: var(--dark); }
         .section-content {
             padding: 25px;
+            overflow-x: auto;
         }
         .section-content.collapsed { display: none; }
         .stage-section .section-content {
@@ -890,14 +904,14 @@ class ReporterAgent(BaseAgent):
             border-radius: 12px;
             overflow: hidden;
             position: relative;
-            min-height: 400px;
+            height: calc(100vh - 200px);
+            max-height: 800px;
         }
         .arch-content {
             padding: 30px;
-            overflow: auto;
             cursor: grab;
             user-select: none;
-            min-height: 600px;
+            height: 100%;
         }
         .arch-content:active { cursor: grabbing; }
         .arch-controls {
@@ -1146,6 +1160,46 @@ class ReporterAgent(BaseAgent):
         ::-webkit-scrollbar-track { background: #f1f1f1; }
         ::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 4px; }
         ::-webkit-scrollbar-thumb:hover { background: #a1a1a1; }
+        
+        /* 脚本目录折叠样式 */
+        .script-details {
+            margin: 15px 0;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            background: #f8f9fa;
+        }
+        .script-summary {
+            padding: 12px 16px;
+            cursor: pointer;
+            font-weight: 500;
+            color: var(--primary);
+            list-style: none;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            user-select: none;
+        }
+        .script-summary::-webkit-details-marker {
+            display: none;
+        }
+        .script-summary::before {
+            content: "▶";
+            font-size: 10px;
+            transition: transform 0.2s;
+        }
+        .script-details[open] .script-summary::before {
+            transform: rotate(90deg);
+        }
+        .script-content {
+            padding: 12px 16px;
+            border-top: 1px solid #e0e0e0;
+            background: #fff;
+            border-radius: 0 0 8px 8px;
+        }
+        .script-content ul {
+            margin: 0;
+            padding-left: 20px;
+        }
 '''
     
     def _generate_js(self, architecture_data: dict, workflow_details: dict, statistics: dict, workflow_jobs: dict) -> str:
@@ -1381,6 +1435,29 @@ class ReporterAgent(BaseAgent):
             archContent.style.transform = `translate(${{translateX}}px, ${{translateY}}px) scale(${{scale}})`;
             archContent.style.transformOrigin = 'center top';
         }}
+        
+        function initAutoScale() {{
+            const container = document.getElementById('arch-container');
+            const svg = archContent.querySelector('svg.arch-svg');
+            
+            if (!svg) return;
+            
+            const containerWidth = container.clientWidth - 60;
+            const containerHeight = container.clientHeight - 60;
+            const svgWidth = parseFloat(svg.getAttribute('width'));
+            const svgHeight = parseFloat(svg.getAttribute('height'));
+            
+            if (svgWidth > 0 && svgHeight > 0) {{
+                const scaleX = containerWidth / svgWidth;
+                const scaleY = containerHeight / svgHeight;
+                scale = Math.min(scaleX, scaleY, 1);
+                translateX = 0;
+                translateY = 0;
+                updateTransform();
+            }}
+        }}
+        
+        window.addEventListener('load', initAutoScale);
         
         document.getElementById('zoom-in').addEventListener('click', () => {{
             scale = Math.min(2, scale + 0.2);
@@ -1991,6 +2068,52 @@ class ReporterAgent(BaseAgent):
             details.append('</div>')
         
         return '\n'.join(details)
+    
+    def _generate_scripts_html(self, scripts_section: str) -> str:
+        """生成脚本目录索引 HTML（带折叠功能）"""
+        if not scripts_section:
+            return '<p>暂无脚本信息</p>'
+        
+        html = self._md_to_html(scripts_section.replace('## 脚本目录索引', '').strip())
+        html = self._add_scripts_collapsible(html)
+        
+        return html
+    
+    def _add_scripts_collapsible(self, html: str) -> str:
+        """为脚本目录添加折叠功能"""
+        pattern = r'(<h3>其他脚本目录</h3>\s*<ul>)'
+        match = re.search(pattern, html)
+        if not match:
+            return html
+        
+        list_start = match.end() - 4
+        list_end = html.find('</ul>', list_start)
+        if list_end == -1:
+            return html
+        
+        list_content = html[list_start:list_end + 5]
+        items = re.findall(r'<li>(.*?)</li>', list_content, re.DOTALL)
+        if len(items) <= 10:
+            return html
+        
+        visible_items = items[:10]
+        hidden_items = items[10:]
+        
+        visible_html = ''.join(f'<li>{item}</li>' for item in visible_items)
+        hidden_html = ''.join(f'<li>{item}</li>' for item in hidden_items)
+        
+        collapsible_html = f'''<h3>其他脚本目录</h3>
+<ul>{visible_html}</ul>
+<details class="script-details">
+<summary class="script-summary">📁 显示更多目录 ({len(hidden_items)} 个)</summary>
+<div class="script-content">
+<ul>{hidden_html}</ul>
+</div>
+</details>'''
+        
+        result = html[:match.start()] + collapsible_html + html[list_end + 5:]
+        
+        return result
     
     def _md_to_html(self, md_content: str) -> str:
         """将 Markdown 内容转为 HTML"""

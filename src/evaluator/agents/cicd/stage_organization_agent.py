@@ -254,6 +254,13 @@ class StageOrganizationAgent(BaseAgent):
         if not layers:
             return llm_response
         
+        # 1. 从 Round 2 表格提取阶段说明（权威来源）
+        stage_descriptions = self._extract_stage_descriptions_from_table(llm_response)
+        
+        # 2. 删除批次生成的阶段说明（可能错误）
+        llm_response = self._remove_batch_stage_descriptions(llm_response)
+        
+        # 3. 清理批次标记
         llm_response = self._clean_batch_markers(llm_response)
         
         organized = []
@@ -309,6 +316,10 @@ class StageOrganizationAgent(BaseAgent):
             if wf_in_layer:
                 if not layer_has_content:
                     layer_sections.append(f"## {layer_name}\n")
+                    # 在阶段章节开头插入阶段说明
+                    matched_desc = self._match_stage_description(layer_name, stage_descriptions)
+                    if matched_desc:
+                        layer_sections.append(f"\n{matched_desc}\n")
                 for j, (wf_name, content) in enumerate(wf_in_layer, 1):
                     new_num = f"{i}.{j}"
                     content = re.sub(r'####\s+\d+\.\d+', f'#### {new_num}', content, count=1)
@@ -363,6 +374,26 @@ class StageOrganizationAgent(BaseAgent):
         
         return "\n\n".join(organized)
     
+    def _match_stage_description(self, layer_name: str, stage_descriptions: Dict[str, str]) -> Optional[str]:
+        """匹配层名称与阶段说明
+        
+        Args:
+            layer_name: 层名称，如 "触发入口层"
+            stage_descriptions: 从阶段表格提取的说明
+        
+        Returns:
+            匹配的阶段说明，或 None
+        """
+        for stage_name, desc in stage_descriptions.items():
+            # 提取阶段简称： "阶段一：触发入口" → "触发入口"
+            stage_short = stage_name.split('：')[-1] if '：' in stage_name else stage_name
+            # 匹配：层名称包含阶段简称，或阶段简称包含层名称（去掉"层"字）
+            layer_short = layer_name.replace('层', '').strip()
+            if stage_short in layer_name or layer_short in stage_short:
+                return desc
+        
+        return None
+    
     def _regenerate_stage_organization(
         self,
         llm_response: str,
@@ -394,3 +425,47 @@ class StageOrganizationAgent(BaseAgent):
         response = self.llm.chat(prompt)  # type: ignore[union-attr]
         
         return response
+    
+    def _extract_stage_descriptions_from_table(self, llm_response: str) -> Dict[str, str]:
+        """从阶段划分表格提取每个阶段的说明
+        
+        Returns:
+            Dict[阶段名称, 阶段说明]
+            例如: {"阶段一：触发入口": "主入口工作流，响应 push、定时调度等触发事件"}
+        """
+        descriptions = {}
+        
+        table_pattern = r'## 阶段划分.*?\n\n\|.*?\n\|.*?\n\|.*?\n((?:\|.*?\n)+)'
+        match = re.search(table_pattern, llm_response, re.DOTALL)
+        if not match:
+            return descriptions
+        
+        table_content = match.group(1)
+        
+        for line in table_content.strip().split('\n'):
+            if not line.startswith('|'):
+                continue
+            
+            cells = [c.strip() for c in line.split('|')]
+            if len(cells) >= 4:
+                stage_name = cells[1]
+                description = cells[3]
+                if stage_name and description:
+                    descriptions[stage_name] = description
+        
+        return descriptions
+    
+    def _remove_batch_stage_descriptions(self, content: str) -> str:
+        """删除批次 prompt 生成的阶段说明
+        
+        批次 prompt 生成的阶段说明格式：
+        ### 阶段说明
+        此阶段负责xxx...
+        ### 触发条件
+        ...
+        
+        需要删除 "### 阶段说明" 到下一个 "###" 或 "####" 之间的内容
+        """
+        pattern = r'\n### 阶段说明\n.*?(?=\n###|\n####|\n##|\Z)'
+        
+        return re.sub(pattern, '', content, flags=re.DOTALL)

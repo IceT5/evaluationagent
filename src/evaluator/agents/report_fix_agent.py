@@ -77,7 +77,7 @@ class ReportFixAgent(BaseAgent):
         
         if not issues:
             print("  无问题需要修复")
-            return {**state, "fix_result": {"status": "no_issues"}}
+            return {"fix_result": {"status": "no_issues"}}
         
         data_fixable = [i for i in issues if i.get("type") in DataFixMethod.SUPPORTED_TYPES]
         llm_fixable = [i for i in issues if i.get("type") in LLMFixMethod.SUPPORTED_TYPES]
@@ -118,7 +118,6 @@ class ReportFixAgent(BaseAgent):
                     self._save_files(storage_dir, report, arch, summary)
                     
                     return {
-                        **state,
                         "corrected_report": report,
                         "architecture_json": arch,
                         "analysis_summary": summary,
@@ -128,7 +127,6 @@ class ReportFixAgent(BaseAgent):
             
             elif user_choice == "retry":
                 return {
-                    **state,
                     "fix_result": {"status": "retry"},
                     "review_retry_count": retry_count + 1,
                     "cicd_retry_mode": "retry",
@@ -138,7 +136,6 @@ class ReportFixAgent(BaseAgent):
             elif user_choice == "skip":
                 self._save_files(storage_dir, report, arch, summary)
                 return {
-                    **state,
                     "corrected_report": report,
                     "architecture_json": arch,
                     "fix_result": {"status": "skip"},
@@ -147,7 +144,6 @@ class ReportFixAgent(BaseAgent):
         self._save_files(storage_dir, report, arch, summary)
         
         return {
-            **state,
             "corrected_report": report,
             "architecture_json": arch,
             "analysis_summary": summary,

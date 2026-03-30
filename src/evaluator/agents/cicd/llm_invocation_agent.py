@@ -21,6 +21,15 @@ except ImportError:
 from .state import CICDState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
+# 导入中断控制器
+try:
+    from evaluator.core.interrupt import interrupt_controller, InterruptException
+    HAS_INTERRUPT = True
+except ImportError:
+    interrupt_controller = None
+    InterruptException = Exception
+    HAS_INTERRUPT = False
+
 
 def _get_concurrent_calls() -> int:
     return config.max_concurrent_llm_calls if config and HAS_CONFIG else 4
@@ -508,6 +517,10 @@ class LLMInvocationAgent(BaseAgent):
         """执行多轮对话"""
         print(f"  [Multi-Round] 开始 {len(rounds)} 轮对话...")
         
+        # 检查中断
+        if HAS_INTERRUPT and interrupt_controller and interrupt_controller.is_interrupted():
+            raise InterruptException("用户中断")
+        
         try:
             timeout = config.llm_call_timeout if config and HAS_CONFIG else 180
             responses, durations = self.llm.chat_multi_round(
@@ -531,6 +544,8 @@ class LLMInvocationAgent(BaseAgent):
                 "round_durations": durations,
                 "index": 0,
             }
+        except InterruptException:
+            raise  # 中断异常直接抛出
         except Exception as e:
             print(f"  [Multi-Round] 失败: {e}")
             return {
@@ -544,6 +559,10 @@ class LLMInvocationAgent(BaseAgent):
         """单次 LLM 调用"""
         if not prompts:
             return []
+        
+        # 检查中断
+        if HAS_INTERRUPT and interrupt_controller and interrupt_controller.is_interrupted():
+            raise InterruptException("用户中断")
         
         prompt_path = prompts[0]
         print(f"  [LLM] 单次调用: {Path(prompt_path).name}")
@@ -561,6 +580,8 @@ class LLMInvocationAgent(BaseAgent):
                 "response": response,
                 "index": 0,
             }]
+        except InterruptException:
+            raise  # 中断异常直接抛出
         except Exception as e:
             return [{
                 "success": False,
@@ -662,6 +683,22 @@ class LLMInvocationAgent(BaseAgent):
         
         return results
     
+    def _interruptible_sleep(self, seconds: float):
+        """可中断的 sleep
+        
+        每秒检查一次中断状态，如果检测到中断则抛出 InterruptException。
+        """
+        if not HAS_INTERRUPT or not interrupt_controller:
+            time.sleep(seconds)
+            return
+        
+        end_time = time.time() + seconds
+        while time.time() < end_time:
+            if interrupt_controller.is_interrupted():
+                raise InterruptException("用户中断")
+            remaining = end_time - time.time()
+            time.sleep(min(1.0, remaining))
+    
     def _call_with_retry(
         self,
         prompt: str,
@@ -674,6 +711,10 @@ class LLMInvocationAgent(BaseAgent):
         retry_delay_base = _get_retry_delay()
         
         for attempt in range(max_retries):
+            # 检查中断
+            if HAS_INTERRUPT and interrupt_controller and interrupt_controller.is_interrupted():
+                raise InterruptException("用户中断")
+            
             try:
                 print(f"  [LLM-{index}/{total}] 处理 {Path(prompt_path).name}...")
                 response = self.llm.chat(prompt)
@@ -684,11 +725,14 @@ class LLMInvocationAgent(BaseAgent):
                     'response': response,
                     'index': index
                 }
+            except InterruptException:
+                raise  # 中断异常直接抛出
             except Exception as e:
                 if attempt < max_retries - 1:
                     delay = retry_delay_base * 10 * (attempt + 1)
                     print(f"  [LLM-{index}/{total}] 失败，{delay}s 后重试 {attempt + 2}/{max_retries}...")
-                    time.sleep(delay)
+                    # 分段 sleep，每秒检查中断
+                    self._interruptible_sleep(delay)
                 else:
                     raise e
         
@@ -716,6 +760,7 @@ class LLMInvocationAgent(BaseAgent):
         for r in successful:
             response = r.get("response", "")
             if response:
+                response = self._clean_trailing_headers(response)
                 merged_parts.append(response)
                 prompt_name = Path(r.get('prompt_path', 'unknown')).name
                 print(f"    - {prompt_name}: {len(response)} 字符")
@@ -724,3 +769,24 @@ class LLMInvocationAgent(BaseAgent):
         print(f"  [Merge] 合并后长度: {len(result)} 字符")
         
         return result
+    
+    def _clean_trailing_headers(self, content: str) -> str:
+        """清理响应末尾的残留标题
+        
+        删除批次响应末尾的空标题：
+        - ### 触发条件
+        - - xxx
+        - ### 工作流详情
+        - （后面没有 #### 工作流标题）
+        
+        这些残留标题会在合并时与下一批次的开头拼接，导致触发条件与工作流不匹配。
+        """
+        import re
+        
+        pattern = r'### 触发条件\s*\n(?:-.*\n|\s*\n)*### 工作流详情\s*\n\s*$'
+        cleaned = re.sub(pattern, '', content)
+        
+        if len(cleaned) != len(content):
+            print(f"    [Clean] 清理了 {len(content) - len(cleaned)} 字符的残留标题")
+        
+        return cleaned

@@ -99,6 +99,7 @@ class EvaluatorState(TypedDict, total=False):
     review_result: Optional[Dict]
     review_issues: List[Dict]
     corrected_report: Optional[str]
+    fix_result: Optional[Dict]
     
     # ========== 智能Agent输出 ==========
     similar_projects: List[Dict]

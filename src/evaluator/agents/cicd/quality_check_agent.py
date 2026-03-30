@@ -51,7 +51,7 @@ class QualityCheckAgent(BaseAgent):
         output_dir = Path(storage_dir) if storage_dir else Path(state.get("project_path", "."))
         
         architecture_json_path = str(output_dir / "architecture.json")
-        self._extract_architecture_json(merged_response, architecture_json_path)
+        self._extract_architecture_json(merged_response, architecture_json_path, ci_data)
         
         architecture_data = self._load_architecture_json(architecture_json_path)
         architecture_data = self._fix_trigger_layer(architecture_data, ci_data)
@@ -83,7 +83,7 @@ class QualityCheckAgent(BaseAgent):
             "validation_result": validation,
         }
     
-    def _extract_architecture_json(self, content: str, output_path: str) -> None:
+    def _extract_architecture_json(self, content: str, output_path: str, ci_data: Dict) -> None:
         """从响应中提取架构 JSON"""
         match = re.search(
             r'<!--\s*ARCHITECTURE_JSON\s*(.*?)\s*ARCHITECTURE_JSON\s*-->',
@@ -94,7 +94,7 @@ class QualityCheckAgent(BaseAgent):
         if match:
             try:
                 arch_data = json.loads(match.group(1).strip())
-                arch_data = self._normalize_node_labels(arch_data)
+                arch_data = self._normalize_node_labels(arch_data, ci_data)
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(arch_data, f, ensure_ascii=False, indent=2)
                 return
@@ -130,7 +130,7 @@ class QualityCheckAgent(BaseAgent):
                     json_str = response.strip()
                 
                 arch_data = json.loads(json_str)
-                arch_data = self._normalize_node_labels(arch_data)
+                arch_data = self._normalize_node_labels(arch_data, ci_data)
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(arch_data, f, ensure_ascii=False, indent=2)
             except json.JSONDecodeError:
@@ -138,21 +138,24 @@ class QualityCheckAgent(BaseAgent):
         else:
             self._save_empty_architecture_json(output_path)
     
-    def _normalize_node_labels(self, arch_data: Dict) -> Dict:
+    def _extract_valid_triggers(self, ci_data: Dict) -> set:
+        """从 ci_data 中提取项目实际使用的触发类型"""
+        triggers = set()
+        for wf_data in ci_data.get("workflows", {}).values():
+            triggers.update(wf_data.get("triggers", []))
+        return triggers
+    
+    def _normalize_node_labels(self, arch_data: Dict, ci_data: Dict) -> Dict:
         """统一节点标签格式：为工作流节点添加 .yml 后缀"""
-        VALID_TRIGGERS = {
-            "push", "pull_request", "pull_request_target", "pull_request_review",
-            "pull_request_review_comment", "schedule", "workflow_dispatch", 
-            "workflow_call", "issues", "issue_comment", "create", "delete",
-            "repository_dispatch", "release", "workflow_run"
-        }
+        # 动态获取项目实际使用的触发类型
+        valid_triggers = self._extract_valid_triggers(ci_data)
         
         for layer in arch_data.get("layers", []):
             for node in layer.get("nodes", []):
                 label = node.get("label", "")
                 if not label.endswith(".yml") and not label.endswith(".yaml"):
                     base_label = label.split(" (")[0].strip()
-                    if base_label not in VALID_TRIGGERS and "事件" not in label:
+                    if base_label not in valid_triggers and "事件" not in label:
                         node["label"] = f"{label}.yml"
         
         return arch_data

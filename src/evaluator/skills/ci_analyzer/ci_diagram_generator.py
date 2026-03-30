@@ -183,7 +183,7 @@ def generate_llm_prompt(raw_data: Dict) -> str:
     # Add detailed workflow information
     workflows = raw_data.get("workflows", {})
     if workflows:
-        prompt += "### 工作流完整信息\n\n"
+        prompt += f"### 工作流完整信息（共 {len(workflows)} 个）\n\n"
         for wf_name, wf in workflows.items():
             prompt += f"---\n\n#### {wf_name}\n\n"
             
@@ -340,18 +340,45 @@ def generate_llm_prompt(raw_data: Dict) -> str:
     scripts = raw_data.get("scripts", [])
     if scripts:
         prompt += "### CI脚本\n\n"
-        for script in scripts[:30]:
+        for script in scripts:
             prompt += f"#### `{script.get('name')}`\n\n"
             prompt += f"**路径**: `{script.get('path')}`\n\n"
             prompt += f"**类型**: {script.get('type')}\n\n"
             
+            # 函数（全部传递）
             funcs = script.get("functions", [])
             if funcs:
-                prompt += f"**函数**: {', '.join(funcs[:10])}\n\n"
+                prompt += f"**函数**: {', '.join(funcs)}\n\n"
             
+            # 引入（全部传递）
+            imports = script.get("imports", [])
+            if imports:
+                prompt += f"**引入**: {', '.join(imports)}\n\n"
+            
+            # 被调用
             called_by = script.get("called_by", [])
             if called_by:
                 prompt += f"**被调用**: {len(called_by)} 次\n\n"
+            
+            # 调用的脚本（全部传递）
+            calls_scripts = script.get("calls_scripts", [])
+            if calls_scripts:
+                prompt += f"**调用的脚本**: {', '.join(calls_scripts)}\n\n"
+            
+            script_type = script.get("type", "")
+            content = script.get("content", "")
+            
+            if script_type in [".yaml", ".yml"]:
+                if content:
+                    if len(content) > 50 * 1024:
+                        content_to_show = content[:10000]
+                        prompt += f"**内容** (前 10000 字符，文件共 {len(content)} 字符):\n```\n{content_to_show}\n```\n\n"
+                    else:
+                        prompt += f"**内容**:\n```\n{content}\n```\n\n"
+            elif script_type not in [".sh", ".py", ".ps1", ".bat", ".groovy"]:
+                if content:
+                    content_preview = content[:2000]
+                    prompt += f"**内容预览**:\n```\n{content_preview}\n```\n\n"
     
     # Add pre-commit configurations
     pre_commit_configs = raw_data.get("pre_commit_configs", [])
@@ -579,7 +606,7 @@ Matrix配置展开后生成 12 个Job实例：
   "layers": [
     {
       "id": "layer-trigger",
-      "name": "触发入口层",
+      "name": "触发条件",
       "nodes": [
         {
           "id": "push-event",
@@ -1036,9 +1063,58 @@ def _generate_round_2_stage_division() -> str:
 | 阶段二：代码检查 | pr-check, precommit | 代码质量检查 |
 | ... | ... | ... |
 
+**典型 CI/CD 阶段参考**（按执行顺序）：
+
+1. **触发入口层**
+   - 功能：响应外部事件，调度后续流程
+   - 特点：被 push、schedule、workflow_dispatch 等事件触发
+   - 作用：作为 CI/CD 流程的入口，调用其他工作流
+
+2. **任务调度层**
+   - 功能：分发任务到不同平台/组件
+   - 特点：接收主入口调用，按平台/组件分发
+   - 作用：协调多平台、多组件的并行构建
+
+3. **构建编译层**
+   - 功能：执行核心构建任务
+   - 特点：编译代码、打包产物、生成构建产物
+   - 作用：产出可部署的构建产物
+
+4. **测试验证层**
+   - 功能：运行测试、验证构建结果
+   - 特点：单元测试、集成测试、性能测试
+   - 作用：确保构建质量
+
+5. **发布部署层**
+   - 功能：版本发布、包发布、部署
+   - 特点：创建版本标签、发布到仓库、部署到环境
+   - 作用：将构建产物发布到生产环境
+
+6. **安全扫描层**
+   - 功能：安全合规检查
+   - 特点：依赖扫描、漏洞检测、合规审计
+   - 作用：确保代码安全
+
+7. **项目自动化层**
+   - 功能：PR/Issue 自动处理
+   - 特点：状态同步、自动分配、标签管理
+   - 作用：减少人工操作
+
+8. **辅助工具层**
+   - 功能：开发辅助工具
+   - 特点：非核心流程，辅助开发效率
+   - 作用：提供开发便利工具
+
+**划分原则**：
+1. 根据工作流的**实际功能**划分，而非名称
+2. 分析工作流的 jobs、steps、调用关系来判断功能
+3. 同一功能领域的工作流归为同一阶段
+4. 不是所有项目都包含所有阶段，根据实际情况调整
+5. 阶段顺序应反映 CI/CD 执行流程
+
 **注意**：
-1. 根据工作流的实际功能和触发条件划分阶段
-2. 只输出此章节，不要输出其他内容"""
+1. 只输出此章节，不要输出其他内容
+2. 确保每个工作流只出现在一个阶段中"""
 
 
 def _generate_round_9_architecture_diagram() -> str:
@@ -1243,7 +1319,7 @@ def _generate_round_8_json_data() -> str:
   "layers": [
     {
       "id": "layer-1",
-      "name": "触发入口层",
+      "name": "触发条件",
       "nodes": [
         {
           "id": "node-1-1",
@@ -1259,6 +1335,14 @@ def _generate_round_8_json_data() -> str:
   ]
 }
 ARCHITECTURE_JSON -->
+
+**重要：必须参考前面输出的【阶段划分】表格！**
+
+**阶段一致性要求**：
+1. 每个工作流节点的 `detail_section` 必须与阶段划分表格完全一致
+2. 同一阶段的工作流节点必须放在同一个 layer 中
+3. 不要因为工作流之间的调用关系而改变其阶段归属
+4. 阶段划分表格是工作流阶段归属的唯一依据
 
 **格式要求**：
 - `layers` 数组包含所有层级
@@ -1282,7 +1366,7 @@ ARCHITECTURE_JSON -->
 
 **层结构要求**：
 1. 第一层是触发入口层，节点是触发条件类型
-2. 后续层按 CI/CD 执行顺序排列
+2. 后续层按阶段划分表格的阶段顺序排列
 3. 每个工作流只能出现在一个层中，不能重复
 
 **重要**：不要修改格式！不要添加额外字段！只输出 JSON 数据！"""
@@ -1336,7 +1420,7 @@ def _generate_global_context(raw_data: Dict) -> str:
     # All workflows summary
     workflows = raw_data.get("workflows", {})
     if workflows:
-        context += "### 工作流列表\n"
+        context += f"### 工作流列表（共{len(workflows)}个）\n"
         for wf_name, wf in workflows.items():
             triggers = wf.get("triggers", [])
             jobs = wf.get("jobs", {})
@@ -1347,9 +1431,8 @@ def _generate_global_context(raw_data: Dict) -> str:
     scripts = raw_data.get("scripts", [])
     if scripts:
         context += f"### CI脚本列表（共{len(scripts)}个）\n"
-        # 按目录分组
         scripts_by_dir = {}
-        for script in scripts[:50]:  # 限制数量
+        for script in scripts:
             path = script.get("path", "")
             dir_name = str(Path(path).parent) if path else "unknown"
             if dir_name not in scripts_by_dir:
@@ -1364,6 +1447,32 @@ def _generate_global_context(raw_data: Dict) -> str:
         if len(scripts) > 50:
             context += f"- ... 共{len(scripts)}个脚本\n"
         context += "\n"
+        
+        context += "### CI脚本详细内容\n\n"
+        context += """**关键配置识别**：
+请检查以下配置文件，识别是否为构建矩阵或其他关键 CI 配置文件。判断依据：
+- 包含多个构建组合定义
+- 定义了系统架构、编译器、运行环境等维度
+- 用于驱动 CI 工作流的动态配置
+
+如果识别到关键配置文件，请在"脚本目录索引"章节的 **关键配置** 小节中简要描述其作用和规模。
+
+"""
+        for script in scripts:
+            script_type = script.get("type", "")
+            script_content = script.get("content", "")
+            
+            if script_type in [".yaml", ".yml"]:
+                if script_content:
+                    if len(script_content) > 50 * 1024:
+                        content_to_show = script_content[:10000]
+                        context += f"#### `{script.get('name')}`\n**内容** (前 10000 字符，文件共 {len(script_content)} 字符):\n```\n{content_to_show}\n```\n\n"
+                    else:
+                        context += f"#### `{script.get('name')}`\n**内容**:\n```\n{script_content}\n```\n\n"
+            elif script_type not in [".sh", ".py", ".ps1", ".bat", ".groovy"]:
+                if script_content:
+                    content_preview = script_content[:2000]
+                    context += f"#### `{script.get('name')}`\n**内容预览**:\n```\n{content_preview}\n```\n\n"
     
     return context
 
@@ -1534,7 +1643,7 @@ def _generate_main_prompt(raw_data: Dict, global_context: str) -> str:
   "layers": [
     {
       "id": "layer-1",
-      "name": "触发入口层",
+      "name": "触发条件",
       "nodes": [
         {
           "id": "node-1-1",
@@ -1665,14 +1774,27 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 **使用的Action**: xxx
 
 **调用的脚本**: xxx
+
+**构建矩阵**（可选，仅当工作流使用矩阵配置时输出）:
+- 配置文件: [矩阵配置文件名]
+- 支持的编译器: [编译器列表]
+- 支持的 CUDA 版本: [版本列表]
+- 估算构建组合数: [数量]
 ```
 
 ### 3. 脚本和 Action 索引（必须输出）
 
 在所有阶段之后，必须输出完整的脚本索引：
 
+**重要**：如果在 CI 脚本详细内容中识别到关键配置文件（如构建矩阵配置），必须在"关键配置"小节中输出。
+
 ```
 ## 脚本目录索引
+
+### 关键配置
+| 配置文件 | 作用 | 规模 |
+|---------|------|------|
+| [文件名] | [简要描述作用] | [如：~200 种组合] |
 
 ### .github/scripts/
 | 脚本名称 | 用途说明 | 被调用的工作流 |

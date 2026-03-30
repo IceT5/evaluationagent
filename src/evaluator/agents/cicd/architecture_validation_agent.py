@@ -114,7 +114,7 @@ class ArchitectureValidationAgent(BaseAgent):
         if trigger_layer is None:
             trigger_layer = {
                 "id": "layer-trigger",
-                "name": "触发入口层",
+                "name": "触发条件",
                 "nodes": []
             }
             architecture.setdefault("layers", [])

@@ -17,6 +17,11 @@ from dataclasses import dataclass, field, asdict
 import sys
 
 
+# 文件类型定义
+SCRIPT_EXTS = {'.py', '.sh', '.ps1', '.bat', '.groovy', '.jl', '.rb', '.pl'}
+CONFIG_EXTS = {'.yaml', '.yml', '.json'}
+
+
 @dataclass
 class StepData:
     """Detailed step data."""
@@ -572,7 +577,13 @@ class CIDataExtractor:
             return None
     
     def _extract_scripts(self, ci_dirs: Dict[str, Path]) -> Tuple[List[ScriptData], Dict[str, List[str]]]:
-        """Extract script information with directory mapping and nested call tracking."""
+        """Extract script information with directory mapping and nested call tracking.
+        
+        根据目录类型应用不同的提取策略：
+        - tests 目录：只提取 README.md 内容，其他文件只记录结构
+        - scripts 目录：提取 README.md + 脚本文件 + 配置文件，其他文件只记录结构
+        - 其他目录：保持原有逻辑（全部提取）
+        """
         scripts = []
         scripts_by_dir = defaultdict(list)
         seen = {}  # name -> ScriptData (for lookup)
@@ -582,48 +593,83 @@ class CIDataExtractor:
             if not isinstance(path, Path) or not path.exists():
                 continue
             
-            for ext in ["*.sh", "*.py", "*.ps1", "*.bat"]:
-                for f in path.rglob(ext):
-                    if f.name not in seen:
-                        try:
-                            with open(f, "r", encoding="utf-8", errors="ignore") as fp:
-                                content = fp.read()
-                            
-                            # Extract functions and imports
-                            functions = []
-                            imports = []
-                            if f.suffix == ".py":
-                                func_pattern = r'^def\s+(\w+)\s*\('
-                                functions = re.findall(func_pattern, content, re.MULTILINE)
-                                import_pattern = r'^(?:import|from)\s+(\S+)'
-                                imports = re.findall(import_pattern, content, re.MULTILINE)
-                            elif f.suffix == ".sh":
-                                func_pattern = r'^(?:function\s+)?(\w+)\s*\(\s*\)\s*\{'
-                                functions = re.findall(func_pattern, content, re.MULTILINE)
-                            
-                            script = ScriptData(
-                                name=f.name,
-                                path=str(f.relative_to(self.repo_path)),
-                                type=f.suffix,
-                                content=content,  # No truncation, keep full content
-                                functions=functions,
-                                imports=imports
-                            )
-                            scripts.append(script)
-                            seen[f.name] = script
-                            script_paths[f.name] = f
-                            
-                            # Map to directory
-                            rel_dir = str(f.parent.relative_to(self.repo_path))
-                            scripts_by_dir[rel_dir].append(f.name)
-                            
-                        except Exception as e:
-                            pass
+            # 判断目录类型
+            is_tests = dir_key in ["tests", "test"]
+            is_scripts = dir_key == "scripts"
+            
+            for f in path.rglob("*"):
+                if not f.is_file():
+                    continue
+                if f.name in seen:
+                    continue
+                
+                path_str = str(f).replace("\\", "/")
+                if (".github/workflows/" in path_str or ".github/actions/" in path_str) \
+                   and f.suffix in [".yaml", ".yml"]:
+                    continue
+                
+                if f.stat().st_size > 1024 * 1024:
+                    continue
+                
+                # 判断文件类型
+                is_readme = f.name.lower() == "readme.md"
+                is_script = f.suffix in SCRIPT_EXTS
+                is_config = f.suffix in CONFIG_EXTS
+                
+                # 根据目录类型决定是否读取内容
+                include_content = True
+                
+                if is_tests:
+                    # tests 目录：只提取 README.md 内容
+                    include_content = is_readme
+                elif is_scripts:
+                    # scripts 目录：提取 README.md + 脚本 + 配置
+                    include_content = is_readme or is_script or is_config
+                # 其他目录：保持原有逻辑（全部提取）
+                
+                try:
+                    if include_content:
+                        with open(f, "r", encoding="utf-8", errors="ignore") as fp:
+                            content = fp.read()
+                        
+                        if "\x00" in content:
+                            continue
+                    else:
+                        content = ""
+                    
+                    functions = []
+                    imports = []
+                    if include_content:
+                        if f.suffix == ".py":
+                            func_pattern = r'^def\s+(\w+)\s*\('
+                            functions = re.findall(func_pattern, content, re.MULTILINE)
+                            import_pattern = r'^(?:import|from)\s+(\S+)'
+                            imports = re.findall(import_pattern, content, re.MULTILINE)
+                        elif f.suffix == ".sh":
+                            func_pattern = r'^(?:function\s+)?(\w+)\s*\(\s*\)\s*\{'
+                            functions = re.findall(func_pattern, content, re.MULTILINE)
+                    
+                    script = ScriptData(
+                        name=f.name,
+                        path=str(f.relative_to(self.repo_path)),
+                        type=f.suffix,
+                        content=content,
+                        functions=functions,
+                        imports=imports
+                    )
+                    scripts.append(script)
+                    seen[f.name] = script
+                    script_paths[f.name] = f
+                    
+                    rel_dir = str(f.parent.relative_to(self.repo_path))
+                    scripts_by_dir[rel_dir].append(f.name)
+                    
+                except Exception:
+                    pass
         
-        # Now analyze nested script calls
         self._analyze_script_calls(scripts, script_paths)
         
-        return scripts, dict(scripts_by_dir)  # No limit on scripts
+        return scripts, dict(scripts_by_dir)
     
     def _analyze_script_calls(self, scripts: List[ScriptData], script_paths: Dict[str, Path]):
         """Analyze nested script calls within each script."""

@@ -51,15 +51,6 @@ def _get_retry_delay() -> float:
     return config.llm_retry_base_delay if config and HAS_CONFIG else 1.0
 
 
-# 有效的 GitHub Actions 触发条件
-VALID_TRIGGERS = {
-    'pull_request', 'push', 'schedule', 'workflow_dispatch',
-    'issues', 'issue_comment', 'pull_request_target',
-    'pull_request_review_comment', 'create', 'delete',
-    'repository_dispatch', 'workflow_call'
-}
-
-
 class ReviewerAgent(BaseAgent):
     """报告验证 Agent - 确保报告准确且完整"""
 
@@ -160,8 +151,12 @@ class ReviewerAgent(BaseAgent):
             print(f"  真实工作流: {len(ground_truth.workflows)}")
             print(f"  真实 Job: {sum(len(j) for j in ground_truth.jobs.values())}")
             
+            # 动态获取触发类型
+            valid_triggers = self._extract_valid_triggers(ci_data)
+            print(f"  触发类型: {', '.join(sorted(valid_triggers))}")
+            
             print("\n[3/6] 提取报告中的实体...")
-            claimed = self._extract_claimed(report, ground_truth)
+            claimed = self._extract_claimed(report, ground_truth, ci_data)
             print(f"  声称工作流: {len(claimed.workflows)}")
             print(f"  声称 Job: {sum(len(j) for j in claimed.jobs.values())}")
             print(f"  (使用正则统计，不依赖 LLM)")
@@ -260,6 +255,13 @@ class ReviewerAgent(BaseAgent):
             actions=actions
         )
     
+    def _extract_valid_triggers(self, ci_data: Dict) -> Set[str]:
+        """从 ci_data 中提取项目实际使用的触发类型"""
+        triggers = set()
+        for wf_data in ci_data.get("workflows", {}).values():
+            triggers.update(wf_data.get("triggers", []))
+        return triggers
+    
     def _count_workflows_by_regex(self, report: str) -> int:
         """用正则统计工作流详细描述数量"""
         pattern = r'####\s+\d+\.\d+\s+[\w-]+\.yml'
@@ -280,8 +282,11 @@ class ReviewerAgent(BaseAgent):
         pattern = r'####\s+\d+\.\d+\s+([\w-]+\.yml)'
         return set(re.findall(pattern, report))
     
-    def _extract_claimed(self, report: str, ground_truth: GroundTruth) -> ClaimedEntities:
+    def _extract_claimed(self, report: str, ground_truth: GroundTruth, ci_data: Dict) -> ClaimedEntities:
         """从报告中提取声称的实体（使用正则统计，不依赖 LLM）"""
+        
+        # 动态获取项目实际使用的触发类型
+        valid_triggers = self._extract_valid_triggers(ci_data)
         
         claimed_workflows = self._extract_workflow_names_by_regex(report)
         
@@ -296,18 +301,18 @@ class ReviewerAgent(BaseAgent):
             
             yaml_blocks = self._extract_yaml_blocks_for_workflow(report, wf)
             for yaml_content in yaml_blocks:
-                for trigger in VALID_TRIGGERS:
+                for trigger in valid_triggers:
                     pattern = rf'^\s*{re.escape(trigger)}\s*:'
                     if re.search(pattern, yaml_content, re.MULTILINE):
                         wf_triggers.add(trigger)
             
             wf_section = self._extract_workflow_section(report, wf)
-            for trigger in VALID_TRIGGERS:
+            for trigger in valid_triggers:
                 pattern = rf'`{re.escape(trigger)}`'
                 if re.search(pattern, wf_section):
                     wf_triggers.add(trigger)
             
-            for trigger in VALID_TRIGGERS:
+            for trigger in valid_triggers:
                 pattern = rf'^###\s+{re.escape(trigger)}(\s*\(|\s*$)'
                 if re.search(pattern, wf_section, re.MULTILINE):
                     wf_triggers.add(trigger)

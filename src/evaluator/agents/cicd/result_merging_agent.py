@@ -125,10 +125,20 @@ class ResultMergingAgent(BaseAgent):
         appendix_content = ""
         if overview_sections.get('appendix'):
             appendix_content = overview_sections['appendix']
+            appendix_content = self._wrap_call_tree(appendix_content)
         else:
             appendix = self._extract_appendix_section(details)
             if appendix:
                 appendix_content = appendix
+        
+        # 从 details（batch 响应）中提取"关键配置"小节
+        key_config_section = ""
+        for detail in details:
+            scripts_section_text = self._extract_section_by_lines(detail, "脚本目录索引")
+            if scripts_section_text:
+                key_config_section = self._extract_key_config_section(scripts_section_text)
+                if key_config_section:
+                    break
         
         if appendix_content:
             appendix_content = re.sub(r'^##\s+脚本目录索引.*?(?=^##|\Z)', '', appendix_content, flags=re.MULTILINE | re.DOTALL)
@@ -139,7 +149,7 @@ class ResultMergingAgent(BaseAgent):
         if overview_sections.get('json'):
             merged.append(overview_sections['json'])
         
-        scripts_section = self._generate_scripts_section(ci_data_path)
+        scripts_section = self._generate_scripts_section(ci_data_path, key_config_section)
         if scripts_section:
             merged.append(scripts_section)
         
@@ -282,8 +292,85 @@ class ResultMergingAgent(BaseAgent):
                 re.MULTILINE | re.DOTALL
             )
             if match:
-                return match.group(1).strip()
+                content = match.group(1).strip()
+                content = self._wrap_call_tree(content)
+                return content
         return None
+    
+    def _wrap_call_tree(self, content: str) -> str:
+        """将调用关系树用代码块包裹
+        
+        检测以"项目CI/CD调用关系树"开头的 ASCII 树形结构，
+        用 ``` 代码块包裹，确保在 HTML 中正确显示。
+        
+        如果调用关系树已被代码块包裹，则跳过处理。
+        """
+        lines = content.split('\n')
+        result = []
+        in_call_tree = False
+        call_tree_buffer = []
+        in_code_block = False
+        
+        for line in lines:
+            if line.strip().startswith('```'):
+                in_code_block = not in_code_block
+                result.append(line)
+                continue
+            
+            if in_code_block:
+                result.append(line)
+                continue
+            
+            if '项目CI/CD调用关系树' in line:
+                in_call_tree = True
+                call_tree_buffer = [line]
+                continue
+            
+            if in_call_tree:
+                if line.strip().startswith('---'):
+                    result.append('```')
+                    result.extend(call_tree_buffer)
+                    result.append('```')
+                    result.append(line)
+                    in_call_tree = False
+                    call_tree_buffer = []
+                elif line.strip() and not any(c in line for c in ['├', '│', '└', '─']):
+                    result.append('```')
+                    result.extend(call_tree_buffer)
+                    result.append('```')
+                    result.append('')
+                    result.append(line)
+                    in_call_tree = False
+                    call_tree_buffer = []
+                else:
+                    call_tree_buffer.append(line)
+            else:
+                result.append(line)
+        
+        if in_call_tree and call_tree_buffer:
+            result.append('```')
+            result.extend(call_tree_buffer)
+            result.append('```')
+        
+        return '\n'.join(result)
+    
+    def _extract_key_config_section(self, content: str) -> str:
+        """从 LLM 输出中提取"关键配置"小节
+        
+        Args:
+            content: 包含脚本目录索引的内容
+            
+        Returns:
+            提取的"关键配置"小节，如果不存在则返回空字符串
+        """
+        match = re.search(
+            r'### 关键配置\s*\n.*?(?=###|##|$)',
+            content,
+            re.DOTALL
+        )
+        if match:
+            return match.group(0).strip()
+        return ""
     
     def _merge_detail_responses(self, details: List[str]) -> str:
         """合并多个详细响应"""
@@ -298,8 +385,13 @@ class ResultMergingAgent(BaseAgent):
         
         return '\n\n'.join(all_sections) if all_sections else details[0]
     
-    def _generate_scripts_section(self, ci_data_path: str) -> str:
-        """生成脚本目录索引"""
+    def _generate_scripts_section(self, ci_data_path: str, key_config_section: str = "") -> str:
+        """生成脚本目录索引
+        
+        Args:
+            ci_data_path: ci_data.json 路径
+            key_config_section: LLM 输出的"关键配置"小节
+        """
         try:
             with open(ci_data_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
@@ -322,6 +414,11 @@ class ResultMergingAgent(BaseAgent):
                 })
         
         lines = ["## 脚本目录索引\n"]
+        
+        # 添加 LLM 输出的"关键配置"小节
+        if key_config_section:
+            lines.append(key_config_section)
+            lines.append("")
         
         ci_dirs = ['.github/scripts', 'scripts']
         sorted_dirs = []
@@ -358,12 +455,9 @@ class ResultMergingAgent(BaseAgent):
         
         lines.append("### 其他脚本目录\n")
         other_dirs = [d for d in sorted_dirs if '.github/scripts' not in d.replace('\\', '/')]
-        for dir_name in other_dirs[:5]:
+        for dir_name in other_dirs:
             dir_scripts = scripts_by_dir[dir_name]
             lines.append(f"- **{dir_name}/** ({len(dir_scripts)} 个脚本)")
-        
-        if len(other_dirs) > 5:
-            lines.append(f"- ... 共 {len(other_dirs)} 个目录")
         
         lines.append(f"\n**总计**: {len(scripts)} 个脚本文件")
         
