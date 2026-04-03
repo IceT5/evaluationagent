@@ -17,6 +17,7 @@ class GroundTruth:
     triggers: Dict[str, Set[str]] = field(default_factory=dict)
     scripts: Set[str] = field(default_factory=set)
     actions: Set[str] = field(default_factory=set)
+    total_steps: int = 0
 
 
 @dataclass
@@ -161,15 +162,34 @@ class ReviewerAgent(BaseAgent):
             print(f"  声称 Job: {sum(len(j) for j in claimed.jobs.values())}")
             print(f"  (使用正则统计，不依赖 LLM)")
             
-            print("\n[4/6] 双向验证...")
+            print("\n[4/7] 双向验证...")
             accuracy_issues = self._bidirectional_validate(ground_truth, claimed, report)
             print(f"  发现 {len(accuracy_issues)} 个准确性问题")
             
-            print("\n[5/6] 完整性检查...")
+            print("\n[5/7] 完整性检查...")
             completeness_issues = self._validate_completeness(report, ground_truth, claimed)
             print(f"  发现 {len(completeness_issues)} 个完整性问题")
             
-            print("\n[6/6] 分类处理...")
+            print("\n[6/7] 验证最终报告...")
+            report_md = state.get("report_md") or str(Path(project_path) / "CI_ARCHITECTURE.md")
+            report_html = state.get("report_html") or str(Path(project_path) / "report.html")
+            
+            if Path(report_html).exists():
+                final_report_result = self.validate_final_reports(report_md, report_html, ci_data)
+                if not final_report_result["valid"]:
+                    print(f"  发现 {len(final_report_result['md_issues']) + len(final_report_result['html_issues'])} 个报告问题")
+                    for issue in final_report_result["md_issues"]:
+                        print(f"    [MD] {issue}")
+                        completeness_issues.append({"severity": "incomplete", "type": "md_issue", "message": issue})
+                    for issue in final_report_result["html_issues"]:
+                        print(f"    [HTML] {issue}")
+                        completeness_issues.append({"severity": "incomplete", "type": "html_issue", "message": issue})
+                else:
+                    print(f"  最终报告验证通过")
+            else:
+                print(f"  HTML 报告不存在，跳过验证")
+            
+            print("\n[7/7] 分类处理...")
             all_issues = accuracy_issues + completeness_issues
             
             result = self._classify_and_process(
@@ -239,9 +259,12 @@ class ReviewerAgent(BaseAgent):
                 scripts.add(path)
         
         actions = set()
+        total_steps = 0
         for wf_data in ci_data.get("workflows", {}).values():
             for job_data in wf_data.get("jobs", {}).values():
-                for step in job_data.get("steps", []):
+                steps = job_data.get("steps", [])
+                total_steps += len(steps)
+                for step in steps:
                     uses = step.get("uses", "")
                     if uses and "@" in uses:
                         action = uses.split("@")[0]
@@ -252,7 +275,8 @@ class ReviewerAgent(BaseAgent):
             jobs=jobs,
             triggers=triggers,
             scripts=scripts,
-            actions=actions
+            actions=actions,
+            total_steps=total_steps
         )
     
     def _extract_valid_triggers(self, ci_data: Dict) -> Set[str]:
@@ -692,7 +716,7 @@ class ReviewerAgent(BaseAgent):
         
         print(f"  工作流: 报告={reported_wf_count}, 实际={actual_wf_count}")
         print(f"  Job表格: 报告={reported_job_count}, 实际={actual_job_count}")
-        print(f"  步骤详情: {reported_step_count}")
+        print(f"  步骤详情: 报告={reported_step_count}, 实际={ground_truth.total_steps}")
         
         if reported_wf_count < actual_wf_count:
             missing_count = actual_wf_count - reported_wf_count
@@ -709,11 +733,17 @@ class ReviewerAgent(BaseAgent):
                 "message": f"有 {reported_wf_count} 个工作流，但只有 {reported_job_count} 个 Job 表格，部分工作流缺少 Job 详细分析。"
             })
         
-        if reported_step_count < 50 and actual_job_count > 10:
+        actual_step_count = ground_truth.total_steps
+        if actual_step_count > 0:
+            coverage_ratio = reported_step_count / actual_step_count
+        else:
+            coverage_ratio = 1.0
+        
+        if coverage_ratio < 0.8:
             issues.append({
                 "severity": "incomplete",
                 "type": "weak_analysis",
-                "message": f"多数工作流分析仅停留在表格概览层面，缺乏对具体执行步骤的深入剖析（仅 {reported_step_count} 个步骤详情）。"
+                "message": f"步骤详情覆盖率仅 {coverage_ratio*100:.1f}%（{reported_step_count}/{actual_step_count}），建议补充更多步骤分析。"
             })
         
         return issues
@@ -982,7 +1012,7 @@ class ReviewerAgent(BaseAgent):
                 "项目概述": r'^##\s+项目概述\s*$(.*?)(?=^##\s+|^<!--|\Z)',
                 "架构图": r'^##\s+.*架构图\s*$(.*?)(?=^##\s+|^<!--|\Z)',
                 "关键发现和建议": r'^##\s+.*发现.*建议\s*$(.*?)(?=^##\s+|^<!--|\Z)',
-                "附录": r'^##\s+附录\s*$(.*?)(?=^##\s+|^<!--|\Z)',
+                "附录": r'^##\s+附录[：:]*\s*.*?$(.*?)(?=^##\s+|^<!--|\Z)',
             }
             
             for section_name, pattern in required_sections.items():

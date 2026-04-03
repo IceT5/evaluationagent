@@ -1,7 +1,7 @@
 """CI/CD 编排器 - 编排各个子 Agent
 
 新的编排流程：
-extract → plan → invoke → merge → validate → organize → report → summary → END
+extract → plan → invoke → merge → check → organize → report → summary → END
 
 可选分支：
 - retry: 如果需要重试 (retry/supplement模式)
@@ -29,7 +29,6 @@ from .llm_invocation_agent import LLMInvocationAgent
 from .result_merging_agent import ResultMergingAgent
 from .quality_check_agent import QualityCheckAgent
 from .retry_handling_agent import RetryHandlingAgent
-from .architecture_validation_agent import ArchitectureValidationAgent
 from .stage_organization_agent import StageOrganizationAgent
 from .report_generation_agent import ReportGenerationAgent, SummaryGenerationAgent
 
@@ -44,13 +43,12 @@ class CICDOrchestrator(BaseAgent):
     - ResultMergingAgent: 结果合并
     - QualityCheckAgent: 质量检查
     - RetryHandlingAgent: 重试处理（retry/supplement模式）
-    - ArchitectureValidationAgent: 架构验证
     - StageOrganizationAgent: 阶段组织
     - ReportGenerationAgent: 报告生成
     - SummaryGenerationAgent: 摘要生成
     
     编排流程：
-    extract → plan → invoke → merge → check → retry? → validate → organize → report → summary → END
+    extract → plan → invoke → merge → check → retry? → organize → report → summary → END
     """
     
     @classmethod
@@ -68,7 +66,6 @@ class CICDOrchestrator(BaseAgent):
                 "ResultMergingAgent",
                 "QualityCheckAgent",
                 "RetryHandlingAgent",
-                "ArchitectureValidationAgent",
                 "StageOrganizationAgent",
                 "ReportGenerationAgent",
                 "SummaryGenerationAgent",
@@ -93,8 +90,7 @@ class CICDOrchestrator(BaseAgent):
         self.merging = ResultMergingAgent()
         self.quality_check = QualityCheckAgent(self.llm)
         self.retry_handling = RetryHandlingAgent(self.llm)
-        self.arch_validation = ArchitectureValidationAgent()
-        self.stage_organization = StageOrganizationAgent(self.llm)
+        self.stage_organization = StageOrganizationAgent()
         self.report_generation = ReportGenerationAgent()
         self.summary_generation = SummaryGenerationAgent()
     
@@ -110,7 +106,6 @@ class CICDOrchestrator(BaseAgent):
         workflow.add_node("invoke", self._wrap(self.invocation))
         workflow.add_node("merge", self._wrap(self.merging))
         workflow.add_node("check", self._wrap(self.quality_check))
-        workflow.add_node("validate", self._wrap(self.arch_validation))
         workflow.add_node("organize", self._wrap(self.stage_organization))
         workflow.add_node("retry", self._wrap(self.retry_handling))
         workflow.add_node("report", self._wrap(self.report_generation))
@@ -138,7 +133,7 @@ class CICDOrchestrator(BaseAgent):
             self._route_after_check,
             {
                 "retry": "retry",
-                "validate": "validate",
+                "organize": "organize",
                 "fail": END,
             }
         )
@@ -149,7 +144,6 @@ class CICDOrchestrator(BaseAgent):
             {"invoke": "invoke", "fail": END}
         )
         
-        workflow.add_edge("validate", "organize")
         workflow.add_edge("organize", "report")
         workflow.add_edge("report", "summary")
         workflow.add_edge("summary", END)
@@ -174,8 +168,15 @@ class CICDOrchestrator(BaseAgent):
             return "skip"
         return "continue"
     
-    def _route_after_check(self, state: CICDState) -> Literal["retry", "validate", "fail"]:
+    def _route_after_check(self, state: CICDState) -> Literal["retry", "organize", "fail"]:
         """质量检查后的路由"""
+        # 新增：检查 validation_result.needs_retry
+        validation_result = state.get("validation_result", {})
+        if validation_result.get("needs_retry"):
+            retry_reason = validation_result.get("retry_reason", "未知原因")
+            print(f"  [Orchestrator] 需要完全重试: {retry_reason}")
+            return "fail"  # 直接返回fail，让上层完全重试
+        
         retry_mode = state.get("retry_mode")
         retry_issues = state.get("retry_issues", [])
         errors = state.get("errors", [])
@@ -190,7 +191,7 @@ class CICDOrchestrator(BaseAgent):
                 return "retry"
             return "fail"
         
-        return "validate"
+        return "organize"
     
     def _route_after_retry(self, state: CICDState) -> Literal["invoke", "fail"]:
         """重试处理后的路由"""
@@ -231,7 +232,6 @@ class CICDOrchestrator(BaseAgent):
             state = self.quality_check.run(state)
             
             if not state.get("errors"):
-                state = self.arch_validation.run(state)
                 state = self.stage_organization.run(state)
                 state = self.report_generation.run(state)
                 state = self.summary_generation.run(state)
@@ -252,12 +252,20 @@ class CICDOrchestrator(BaseAgent):
         state = self.merging.run(state)
         state = self.quality_check.run(state)
         
+        # 新增：检查 validation_result.needs_retry
+        validation_result = state.get("validation_result", {})
+        if validation_result.get("needs_retry"):
+            retry_reason = validation_result.get("retry_reason", "未知原因")
+            print(f"  [Orchestrator] 需要完全重试: {retry_reason}")
+            # 标记失败，让上层完全重试
+            state["errors"] = state.get("errors", []) + [f"需要完全重试: {retry_reason}"]
+            return state
+        
         if retry_mode == "retry" and retry_issues:
             state = self.retry_handling.run(state)
             state = self.invocation.run(state)
         
         if not state.get("errors"):
-            state = self.arch_validation.run(state)
             state = self.stage_organization.run(state)
             state = self.report_generation.run(state)
             state = self.summary_generation.run(state)

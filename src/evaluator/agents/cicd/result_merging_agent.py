@@ -33,8 +33,9 @@ class ResultMergingAgent(BaseAgent):
         responses = state.get("llm_responses", [])
         ci_data = state.get("ci_data") or {}
         ci_data_path = state.get("ci_data_path") or ""
+        key_configs = state.get("key_configs", [])
         
-        merged = self.merge(responses, ci_data, ci_data_path)
+        merged = self.merge(responses, ci_data, ci_data_path, key_configs)
         
         return {
             **state,
@@ -45,7 +46,8 @@ class ResultMergingAgent(BaseAgent):
         self,
         responses: List[Dict[str, Any]],
         ci_data: Optional[Dict[str, Any]] = None,
-        ci_data_path: str = ""
+        ci_data_path: str = "",
+        key_configs: List[Dict[str, str]] = None,
     ) -> str:
         """合并多个 LLM 响应"""
         successful = [r for r in responses if r.get('success')]
@@ -76,7 +78,7 @@ class ResultMergingAgent(BaseAgent):
                 detail_responses.append(r['response'])
         
         if overview_response and detail_responses:
-            return self._merge_overview_and_details(overview_response, detail_responses, ci_data_path)
+            return self._merge_overview_and_details(overview_response, detail_responses, ci_data_path, key_configs)
         elif len(successful) == 1:
             return successful[0]['response']
         else:
@@ -86,7 +88,8 @@ class ResultMergingAgent(BaseAgent):
         self,
         overview: str,
         details: List[str],
-        ci_data_path: str = ""
+        ci_data_path: str = "",
+        key_configs: List[Dict[str, str]] = None,
     ) -> str:
         """合并概览和详细响应"""
         merged = []
@@ -131,14 +134,16 @@ class ResultMergingAgent(BaseAgent):
             if appendix:
                 appendix_content = appendix
         
-        # 从 details（batch 响应）中提取"关键配置"小节
         key_config_section = ""
-        for detail in details:
-            scripts_section_text = self._extract_section_by_lines(detail, "脚本目录索引")
-            if scripts_section_text:
-                key_config_section = self._extract_key_config_section(scripts_section_text)
-                if key_config_section:
-                    break
+        if key_configs:
+            key_config_section = self._generate_key_config_section(key_configs)
+        else:
+            for detail in details:
+                scripts_section_text = self._extract_section_by_lines(detail, "脚本目录索引")
+                if scripts_section_text:
+                    key_config_section = self._extract_key_config_section(scripts_section_text)
+                    if key_config_section:
+                        break
         
         if appendix_content:
             appendix_content = re.sub(r'^##\s+脚本目录索引.*?(?=^##|\Z)', '', appendix_content, flags=re.MULTILINE | re.DOTALL)
@@ -462,3 +467,27 @@ class ResultMergingAgent(BaseAgent):
         lines.append(f"\n**总计**: {len(scripts)} 个脚本文件")
         
         return '\n'.join(lines)
+    
+    def _generate_key_config_section(self, key_configs: List[Dict[str, str]]) -> str:
+        """从 key_configs 生成关键配置章节
+        
+        Args:
+            key_configs: 关键配置列表，每个元素包含 name, description, scale
+        
+        Returns:
+            Markdown 格式的关键配置章节
+        """
+        if not key_configs:
+            return ""
+        
+        lines = ["### 关键配置\n"]
+        lines.append("| 配置文件 | 说明 | 规模 |")
+        lines.append("|----------|------|------|")
+        
+        for config in key_configs:
+            name = config.get("name", "")
+            desc = config.get("description", "")
+            scale = config.get("scale", "")
+            lines.append(f"| `{name}` | {desc} | {scale} |")
+        
+        return "\n".join(lines)

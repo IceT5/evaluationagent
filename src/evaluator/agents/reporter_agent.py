@@ -169,7 +169,7 @@ class ReporterAgent(BaseAgent):
     
     def _extract_appendix(self, content: str) -> str:
         """提取附录"""
-        match = re.search(r'^##\s+附录\s*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
+        match = re.search(r'^##\s+附录[：:]*\s*.*?$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
         if match:
             return f"## 附录{match.group(1)}"
         return ""

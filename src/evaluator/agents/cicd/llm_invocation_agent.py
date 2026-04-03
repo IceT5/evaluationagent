@@ -51,15 +51,12 @@ def validate_round_response(round_num: int, response: str) -> dict:
         return result
     
     expected_markers = {
-        1: ["项目概述", "##"],
-        2: ["阶段划分", "##"],
-        3: ["scores", "{"],
-        4: ["strengths", "{"],
-        5: ["weaknesses", "{"],
-        6: ["recommendations", "{"],
-        7: ["附录", "├", "│"],
-        8: ["ARCHITECTURE_JSON", "<!--"],
-        9: ["架构图", "┌", "│"],
+        0: ["项目概述", "##"],
+        1: ["阶段划分", "##"],
+        2: ["ARCHITECTURE_JSON", "<!--"],
+        3: ["架构图", "┌", "│"],
+        4: ["附录", "├", "│"],
+        5: ["scores", "{"],
     }
     
     markers = expected_markers.get(round_num, [])
@@ -74,6 +71,9 @@ def validate_round_response(round_num: int, response: str) -> dict:
 def parse_multi_round_responses(responses: List[str]) -> dict:
     """从多轮响应中直接提取结构化数据
     
+    Args:
+        responses: 所有轮次的响应
+    
     Returns:
         {
             "overview": str,
@@ -85,7 +85,8 @@ def parse_multi_round_responses(responses: List[str]) -> dict:
             "recommendations": list,
             "call_tree": str,
             "architecture_json": dict,
-            "merged_response": str
+            "merged_response": str,
+            "key_configs": list
         }
     """
     import json
@@ -102,16 +103,15 @@ def parse_multi_round_responses(responses: List[str]) -> dict:
         "call_tree": "",
         "architecture_json": {},
         "merged_response": "",
-        "parse_warnings": []
+        "parse_warnings": [],
+        "key_configs": [],
     }
     
     for i, resp in enumerate(responses):
-        if i == 0:
-            continue
-        
         resp = resp.strip()
+        round_num = i
         
-        validation = validate_round_response(i, resp)
+        validation = validate_round_response(round_num, resp)
         if validation["warnings"]:
             result["parse_warnings"].extend(validation["warnings"])
             for w in validation["warnings"]:
@@ -119,53 +119,36 @@ def parse_multi_round_responses(responses: List[str]) -> dict:
         
         print(f"  [Parse] Round {i}: {len(resp)} 字符")
         
-        if i == 1:
-            # Round 1: 项目概述
+        if round_num == 0:
+            # Round 0: 项目概述
             result["overview"] = resp
         
-        elif i == 2:
-            # Round 2: 阶段划分
+        elif round_num == 1:
+            # Round 1: 阶段划分
             result["stage_division"] = resp
         
-        elif i == 3:
-            # Round 3: 架构评分 JSON
-            data = extract_json_from_response(resp, i)
-            result["scores"] = data.get("scores", {})
-            if not result["scores"]:
-                result["parse_warnings"].append(f"Round {i}: scores 提取失败")
-        
-        elif i == 4:
-            # Round 4: 优势模式 JSON
-            data = extract_json_from_response(resp, i)
-            result["strengths"] = data.get("strengths", [])
-            if not result["strengths"]:
-                result["parse_warnings"].append(f"Round {i}: strengths 提取失败")
-        
-        elif i == 5:
-            # Round 5: 问题 JSON
-            data = extract_json_from_response(resp, i)
-            result["weaknesses"] = data.get("weaknesses", [])
-            if not result["weaknesses"]:
-                result["parse_warnings"].append(f"Round {i}: weaknesses 提取失败")
-        
-        elif i == 6:
-            # Round 6: 建议 JSON
-            data = extract_json_from_response(resp, i)
-            result["recommendations"] = data.get("recommendations", [])
-            if not result["recommendations"]:
-                result["parse_warnings"].append(f"Round {i}: recommendations 提取失败")
-        
-        elif i == 7:
-            # Round 7: 调用关系树 (附录)
-            result["call_tree"] = resp
-        
-        elif i == 8:
-            # Round 8: 架构 JSON 数据
+        elif round_num == 2:
+            # Round 2: JSON架构
             result["architecture_json"] = extract_architecture_json(resp)
         
-        elif i == 9:
-            # Round 9: ASCII 架构图
+        elif round_num == 3:
+            # Round 3: 架构图
             result["architecture_diagram"] = resp
+        
+        elif round_num == 4:
+            # Round 4: 调用关系树
+            result["call_tree"] = resp
+        
+        elif round_num == 5:
+            # Round 5: 合并JSON输出
+            data = extract_json_from_response(resp, round_num)
+            result["scores"] = data.get("scores", {})
+            result["strengths"] = data.get("strengths", [])
+            result["weaknesses"] = data.get("weaknesses", [])
+            result["recommendations"] = data.get("recommendations", [])
+            
+            if not result["scores"]:
+                result["parse_warnings"].append(f"Round {i}: scores 提取失败")
     
     required = ["overview", "stage_division"]
     for field in required:
@@ -176,6 +159,70 @@ def parse_multi_round_responses(responses: List[str]) -> dict:
     result["merged_response"] = merge_to_markdown(result)
     
     return result
+
+
+def _merge_key_configs_from_responses(responses: List[str]) -> List[dict]:
+    """合并多个响应中的关键配置信息
+    
+    用于：
+    - Batch N+1 分批（脚本分析）
+    
+    Args:
+        responses: LLM响应列表
+    
+    Returns:
+        合并后的关键配置列表
+    """
+    import re
+    
+    all_key_configs = []
+    seen = set()
+    
+    for response in responses:
+        key_configs = _extract_key_configs_from_response(response)
+        for config in key_configs:
+            config_name = config.get("name", "")
+            if config_name and config_name not in seen:
+                seen.add(config_name)
+                all_key_configs.append(config)
+    
+    return all_key_configs
+
+
+def _extract_key_configs_from_response(response: str) -> List[dict]:
+    """从 LLM 响应中提取关键配置信息
+    
+    Args:
+        response: LLM 响应
+    
+    Returns:
+        关键配置列表
+    """
+    import re
+    
+    key_configs = []
+    
+    # 尝试提取 "关键配置" 小节
+    match = re.search(
+        r'###\s+关键配置\s*\n(.*?)(?=###|##|$)',
+        response,
+        re.DOTALL
+    )
+    
+    if match:
+        content = match.group(1)
+        # 提取表格行
+        table_matches = re.findall(r'\|\s*`?([^`|\n]+)`?\s*\|\s*([^|\n]+)\s*\|\s*([^|\n]+)\s*\|', content)
+        for name, desc, scale in table_matches:
+            name = name.strip()
+            if name and name != "配置文件":
+                key_configs.append({
+                    "name": name,
+                    "description": desc.strip(),
+                    "scale": scale.strip(),
+                })
+    
+    return key_configs
 
 
 def extract_json_from_response(response: str, round_num: int) -> dict:
@@ -450,10 +497,11 @@ class LLMInvocationAgent(BaseAgent):
         
         if strategy == "skip":
             return {
-                **state,
-                "llm_responses": [],
-                "merged_response": "",
-            }
+            **state,
+            "llm_responses": [],
+            "merged_response": "",
+            "key_configs": [],
+        }
         
         if self.llm is None and HAS_LLM:
             from evaluator.llm import get_default_client
@@ -461,12 +509,12 @@ class LLMInvocationAgent(BaseAgent):
         
         output_dir = Path(storage_dir) if storage_dir else Path(state.get("project_path", "."))
         
-        if strategy == "single":
-            responses = self._single_call(prompts)
-        elif prompt_strategy == "multi_round":
+        if prompt_strategy == "multi_round":
             responses = self._multi_round_call(state)
         else:
             responses = self._parallel_calls(prompts)
+        
+        key_configs = self._extract_key_configs_from_responses(responses)
         
         merged_response = self._merge_responses(responses, ci_data, state.get("ci_data_path") or "")
         
@@ -477,8 +525,40 @@ class LLMInvocationAgent(BaseAgent):
             **state,
             "llm_responses": responses,
             "merged_response": merged_response,
+            "key_configs": key_configs,
             "retry_count": state.get("retry_count", 0),
         }
+    
+    def _extract_key_configs_from_responses(self, responses: List[Dict[str, Any]]) -> List[dict]:
+        """从 LLM 响应中提取关键配置
+        
+        Args:
+            responses: LLM 响应列表
+        
+        Returns:
+            关键配置列表
+        """
+        # 1. 从main_multi_round响应中提取
+        for r in responses:
+            if r.get("success") and r.get("prompt_path") == "main_multi_round":
+                parsed_data = r.get("parsed_data", {})
+                key_configs = parsed_data.get("key_configs", [])
+                if key_configs:
+                    print(f"  [LLM] 提取关键配置: {len(key_configs)} 个")
+                return key_configs
+        
+        # 2. 从脚本分析Batch响应中提取
+        script_analysis_responses = [
+            r.get("response", "") for r in responses 
+            if r.get("success") and "script_analysis" in r.get("prompt_path", "")
+        ]
+        
+        if script_analysis_responses:
+            key_configs = _merge_key_configs_from_responses(script_analysis_responses)
+            print(f"  [LLM] 从脚本分析中提取关键配置: {len(key_configs)} 个")
+            return key_configs
+        
+        return []
     
     def _multi_round_call(self, state: CICDState) -> List[Dict[str, Any]]:
         """多轮对话调用
@@ -512,9 +592,14 @@ class LLMInvocationAgent(BaseAgent):
     def _execute_multi_round(
         self,
         rounds: List[str],
-        system_prompt: str = ""
+        system_prompt: str = "",
     ) -> Dict[str, Any]:
-        """执行多轮对话"""
+        """执行多轮对话
+        
+        Args:
+            rounds: 轮次 prompt 列表
+            system_prompt: 系统提示
+        """
         print(f"  [Multi-Round] 开始 {len(rounds)} 轮对话...")
         
         # 检查中断
@@ -554,41 +639,6 @@ class LLMInvocationAgent(BaseAgent):
                 "error": str(e),
                 "index": 0,
             }
-    
-    def _single_call(self, prompts: List[str]) -> List[Dict[str, Any]]:
-        """单次 LLM 调用"""
-        if not prompts:
-            return []
-        
-        # 检查中断
-        if HAS_INTERRUPT and interrupt_controller and interrupt_controller.is_interrupted():
-            raise InterruptException("用户中断")
-        
-        prompt_path = prompts[0]
-        print(f"  [LLM] 单次调用: {Path(prompt_path).name}")
-        
-        try:
-            with open(prompt_path, "r", encoding="utf-8") as f:
-                prompt_content = f.read()
-            
-            response = self.llm.chat(prompt_content)
-            print(f"  [LLM] 响应完成 ({len(response)} 字符)")
-            
-            return [{
-                "success": True,
-                "prompt_path": prompt_path,
-                "response": response,
-                "index": 0,
-            }]
-        except InterruptException:
-            raise  # 中断异常直接抛出
-        except Exception as e:
-            return [{
-                "success": False,
-                "prompt_path": prompt_path,
-                "error": str(e),
-                "index": 0,
-            }]
     
     def _parallel_calls(self, prompt_files: List[str]) -> List[Dict[str, Any]]:
         """并发 LLM 调用

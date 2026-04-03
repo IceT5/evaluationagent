@@ -235,20 +235,15 @@ def prepare_cicd_retry(state: EvaluatorState) -> Dict[str, Any]:
     Returns:
         状态更新字典
     """
-    review_result = state.get("review_result", {})
-    status = review_result.get("status", "unknown")
-    
-    retry_mode = "retry" if status == "critical" else "supplement"
+    retry_mode = state["cicd_retry_mode"]
     retry_count = state.get("cicd_retry_count", 0) + 1
     retry_issues = state.get("cicd_retry_issues", [])
     existing_report = state.get("cicd_existing_report")
     
     return {
-        # CICDOrchestrator 和 RetryHandlingAgent 需要的字段
         "retry_mode": retry_mode,
         "retry_issues": retry_issues,
         "cicd_existing_report": existing_report,
-        # 兼容旧字段
         "cicd_retry_mode": retry_mode,
         "cicd_retry_count": retry_count,
     }

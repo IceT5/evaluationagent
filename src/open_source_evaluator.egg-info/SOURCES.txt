@@ -20,6 +20,7 @@ src/evaluator/agents/loader_agent.py
 src/evaluator/agents/orchestrator_agent.py
 src/evaluator/agents/recommendation_agent.py
 src/evaluator/agents/reflection_agent.py
+src/evaluator/agents/report_fix_agent.py
 src/evaluator/agents/reporter_agent.py
 src/evaluator/agents/reviewer_agent.py
 src/evaluator/agents/state_validation_agent.py
@@ -59,6 +60,11 @@ src/evaluator/core/graphs/__init__.py
 src/evaluator/core/graphs/analyze_graph.py
 src/evaluator/core/graphs/compare_graph.py
 src/evaluator/core/graphs/main_graph.py
+src/evaluator/fix/__init__.py
+src/evaluator/fix/coordinator.py
+src/evaluator/fix/method.py
+src/evaluator/fix/models.py
+src/evaluator/fix/strategy.py
 src/evaluator/llm/__init__.py
 src/evaluator/llm/client.py
 src/evaluator/llm/tracing.py

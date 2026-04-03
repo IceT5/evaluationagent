@@ -4,13 +4,6 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-try:
-    from evaluator.llm import LLMClient
-    HAS_LLM = True
-except ImportError:
-    HAS_LLM = False
-    LLMClient = None
-
 from .state import CICDState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
@@ -21,7 +14,6 @@ class StageOrganizationAgent(BaseAgent):
     负责验证和组织报告的阶段结构：
     1. 验证阶段组织是否正确
     2. 根据架构图重新组织阶段内容
-    3. 调用LLM重新划分（如需要）
     
     输入（CICDState）:
     - merged_response: LLM响应
@@ -40,12 +32,8 @@ class StageOrganizationAgent(BaseAgent):
             category="analysis",
             inputs=["merged_response", "architecture_json", "ci_data"],
             outputs=["merged_response"],
-            dependencies=["ArchitectureValidationAgent"],
+            dependencies=["QualityCheckAgent"],
         )
-    
-    def __init__(self, llm=None):
-        super().__init__()
-        self.llm = llm
     
     def run(self, state):
         """执行阶段组织"""
@@ -74,10 +62,7 @@ class StageOrganizationAgent(BaseAgent):
     ) -> str:
         """验证并重新组织阶段"""
         try:
-            from evaluator.agents import ReviewerAgent
-            reviewer = ReviewerAgent(llm=self.llm)
-            
-            validation = reviewer.validate_stage_organization(llm_response, architecture_data)
+            validation = self._validate_stage_organization(llm_response, architecture_data)
             
             if validation["valid"]:
                 print("  [OK] 阶段划分检视通过")
@@ -95,22 +80,67 @@ class StageOrganizationAgent(BaseAgent):
             try:
                 reorganized = self._reorganize_by_architecture(llm_response, architecture_data, ci_data)
                 
-                re_validation = reviewer.validate_stage_organization(reorganized, architecture_data)
+                re_validation = self._validate_stage_organization(reorganized, architecture_data)
                 if re_validation["valid"] or re_validation.get("workflow_coverage", 0) > validation.get("workflow_coverage", 0):
                     print("  [OK] 阶段重新组织成功")
                     return reorganized
                 else:
-                    print("  [WARN] 代码重新组织效果不佳，调用 LLM 重新划分...")
-                    return self._regenerate_stage_organization(llm_response, architecture_data, ci_data)
-            except Exception as e:
-                print(f"  [WARN] 阶段重新组织失败: {e}，调用 LLM 重新划分...")
-                try:
-                    return self._regenerate_stage_organization(llm_response, architecture_data, ci_data)
-                except:
+                    print("  [WARN] 代码重新组织效果不佳，保持原报告")
                     return llm_response
+            except Exception as e:
+                print(f"  [WARN] 阶段重新组织失败: {e}，保持原报告")
+                return llm_response
         except Exception as e:
             print(f"  [WARN] 阶段组织异常: {e}")
             return llm_response
+    
+    def _validate_stage_organization(
+        self,
+        llm_response: str,
+        architecture_data: dict
+    ) -> Dict[str, Any]:
+        """验证阶段划分是否与架构图匹配
+        
+        Args:
+            llm_response: LLM 响应内容
+            architecture_data: 架构图 JSON 数据
+        
+        Returns:
+            {
+                "valid": bool,
+                "expected_stages": List[str],
+                "found_stages": List[str],
+                "missing_stages": List[str],
+                "workflow_coverage": float
+            }
+        """
+        layers = architecture_data.get("layers", [])
+        expected_stages = [layer.get("name", "") for layer in layers]
+        
+        found_stages = re.findall(r'^##\s+(.+?)\s*$', llm_response, re.MULTILINE)
+        
+        missing_stages = []
+        for stage in expected_stages:
+            if not any(stage in found for found in found_stages):
+                missing_stages.append(stage)
+        
+        expected_workflows = set()
+        for layer in layers:
+            for node in layer.get("nodes", []):
+                label = node.get("label", "")
+                if label.endswith(".yml"):
+                    expected_workflows.add(label)
+        
+        found_workflows = set(re.findall(r'####\s+\d+\.\d+\s+([\w-]+\.yml)', llm_response))
+        coverage = len(found_workflows & expected_workflows) / len(expected_workflows) if expected_workflows else 0
+        
+        return {
+            "valid": len(missing_stages) == 0 and coverage >= 0.8,
+            "expected_stages": expected_stages,
+            "found_stages": list(found_stages),
+            "missing_stages": missing_stages,
+            "workflow_coverage": coverage
+        }
     
     def _extract_section_by_lines(self, content: str, title_pattern: str) -> str:
         """使用行解析提取章节，不依赖正则
@@ -393,38 +423,6 @@ class StageOrganizationAgent(BaseAgent):
                 return desc
         
         return None
-    
-    def _regenerate_stage_organization(
-        self,
-        llm_response: str,
-        architecture_data: dict,
-        ci_data: dict
-    ) -> str:
-        """调用LLM重新划分阶段"""
-        layers = architecture_data.get("layers", [])
-        
-        stage_instruction = "请按照以下阶段重新组织报告内容：\n\n"
-        for i, layer in enumerate(layers, 1):
-            layer_name = layer.get("name", f"阶段{i}")
-            workflows = [n.get("label") for n in layer.get("nodes", []) if n.get("label", "").endswith(".yml")]
-            stage_instruction += f"{i}. {layer_name}：包含 {', '.join(workflows)}\n"
-        
-        stage_instruction += "\n请将每个工作流的详细内容放入对应阶段，保持原有的详细描述不变。"
-        
-        prompt = f"""以下是 CI/CD 分析报告的内容，但阶段划分不正确。
-
-{stage_instruction}
-
-原始报告内容：
-{llm_response[:10000]}
-
-请按照上述阶段划分重新组织报告，输出完整的 Markdown 内容。保持每个工作流的详细描述不变，只调整阶段归属。
-"""
-        
-        print("  正在调用 LLM 重新划分阶段...")
-        response = self.llm.chat(prompt)  # type: ignore[union-attr]
-        
-        return response
     
     def _extract_stage_descriptions_from_table(self, llm_response: str) -> Dict[str, str]:
         """从阶段划分表格提取每个阶段的说明

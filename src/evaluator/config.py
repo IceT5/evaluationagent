@@ -48,10 +48,16 @@ class Config:
     # === 报告配置 ===
     # 报告最大章节长度
     max_section_length: int = 3000
-    # 单次 prompt 最大工作流数
-    max_workflows_single: int = 10
-    # 每批工作流数
+    # 单次 prompt 最大工作流数（兜底限制）
+    max_workflows_single: int = 20
+    # 每批工作流数（兜底限制）
     max_workflows_batch: int = 10
+    
+    # === Prompt 策略配置 ===
+    # 单次调用最大 prompt 占比（相对于 llm_max_tokens）
+    max_single_prompt_ratio: float = 0.7
+    # 每批次最大 prompt 占比
+    max_batch_prompt_ratio: float = 0.5
     
     @classmethod
     def from_env(cls) -> "Config":
@@ -85,8 +91,11 @@ class Config:
             llm_max_tokens=get_int("EVAL_LLM_MAX_TOKENS", 131072),
             # 报告配置
             max_section_length=get_int("EVAL_MAX_SECTION_LENGTH", 3000),
-            max_workflows_single=get_int("EVAL_MAX_WORKFLOWS_SINGLE", 10),
+            max_workflows_single=get_int("EVAL_MAX_WORKFLOWS_SINGLE", 20),
             max_workflows_batch=get_int("EVAL_MAX_WORKFLOWS_BATCH", 10),
+            # Prompt 策略配置
+            max_single_prompt_ratio=get_float("EVAL_MAX_SINGLE_PROMPT_RATIO", 0.7),
+            max_batch_prompt_ratio=get_float("EVAL_MAX_BATCH_PROMPT_RATIO", 0.5),
         )
 
 

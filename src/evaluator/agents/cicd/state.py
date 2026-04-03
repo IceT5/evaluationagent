@@ -7,7 +7,7 @@ CICD_STATE_FIELDS = {
     "loader": ["loader_result", "project_name"],
     "data": ["ci_data", "ci_data_path", "workflow_count"],
     "planning": ["strategy", "prompts", "prompt_strategy", "batch_files", "main_rounds", "main_system_prompt"],
-    "execution": ["llm_responses", "merged_response"],
+    "execution": ["llm_responses", "merged_response", "key_configs"],
     "quality": ["validation_result", "retry_count", "max_retries"],
     "retry": ["retry_mode", "retry_issues", "cicd_existing_report"],
     "architecture": ["architecture_json_path"],
@@ -20,7 +20,7 @@ ALL_CICD_FIELDS = [f for fields in CICD_STATE_FIELDS.values() for f in fields]
 
 OUTPUT_FIELDS = [
     "ci_data", "ci_data_path", "workflow_count", "strategy",
-    "llm_responses", "merged_response", "validation_result",
+    "llm_responses", "merged_response", "key_configs", "validation_result",
     "report_md", "report_html", "architecture_json", "analysis_summary",
     "errors", "warnings",
 ]
@@ -96,6 +96,7 @@ class CICDState(TypedDict, total=False):
     # 执行阶段
     llm_responses: List[Dict[str, Any]]
     merged_response: str
+    key_configs: List[Dict[str, str]]
     
     # 质量检查阶段
     validation_result: Optional[Dict[str, Any]]

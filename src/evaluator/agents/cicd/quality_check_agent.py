@@ -51,7 +51,24 @@ class QualityCheckAgent(BaseAgent):
         output_dir = Path(storage_dir) if storage_dir else Path(state.get("project_path", "."))
         
         architecture_json_path = str(output_dir / "architecture.json")
-        self._extract_architecture_json(merged_response, architecture_json_path, ci_data)
+        
+        # 提取 architecture.json，检查是否成功
+        extract_success = self._extract_architecture_json(merged_response, architecture_json_path, ci_data)
+        
+        if not extract_success:
+            # 未找到 ARCHITECTURE_JSON，标记需要重试
+            print("  [Quality] ARCHITECTURE_JSON 提取失败，建议重新执行分析")
+            return {
+                **state,
+                "validation_result": {
+                    "is_complete": False,
+                    "needs_retry": True,
+                    "retry_reason": "Round 2 未输出 ARCHITECTURE_JSON",
+                    "missing_workflows": [],
+                    "missing_trigger_types": [],
+                },
+                "architecture_json": {"layers": [], "connections": []},
+            }
         
         architecture_data = self._load_architecture_json(architecture_json_path)
         architecture_data = self._fix_trigger_layer(architecture_data, ci_data)
@@ -66,8 +83,7 @@ class QualityCheckAgent(BaseAgent):
             with open(architecture_json_path, "w", encoding="utf-8") as f:
                 json.dump(architecture_data, f, ensure_ascii=False, indent=2)
         
-        # 跳过 _organize_stages（StageOrganizationAgent 会在后续处理）
-        
+        # 验证概述准确性
         overview_match = re.search(r'^##\s+项目概述\s*\n(.*?)(?=^##\s+)', merged_response, re.MULTILINE | re.DOTALL)
         if overview_match:
             overview = f"## 项目概述{overview_match.group(1)}"
@@ -83,8 +99,13 @@ class QualityCheckAgent(BaseAgent):
             "validation_result": validation,
         }
     
-    def _extract_architecture_json(self, content: str, output_path: str, ci_data: Dict) -> None:
-        """从响应中提取架构 JSON"""
+    def _extract_architecture_json(self, content: str, output_path: str, ci_data: Dict) -> bool:
+        """从响应中提取架构 JSON
+        
+        Returns:
+            True: 成功提取
+            False: 未找到ARCHITECTURE_JSON标记，需要重试
+        """
         match = re.search(
             r'<!--\s*ARCHITECTURE_JSON\s*(.*?)\s*ARCHITECTURE_JSON\s*-->',
             content,
@@ -97,46 +118,17 @@ class QualityCheckAgent(BaseAgent):
                 arch_data = self._normalize_node_labels(arch_data, ci_data)
                 with open(output_path, "w", encoding="utf-8") as f:
                     json.dump(arch_data, f, ensure_ascii=False, indent=2)
-                return
-            except json.JSONDecodeError:
-                pass
-        
-        sections = self._extract_sections(content)
-        if not sections:
-            self._save_empty_architecture_json(output_path)
-            return
-        
-        sections_text = "\n".join([
-            f"{'  ' * (s['level'] - 2)}{'##' if s['level'] == 2 else '###'} {s['title']}"
-            for s in sections[:25]
-        ])
-        
-        prompt = f'''根据以下 CI/CD 报告章节，生成架构图的 JSON 结构。
-
-章节:
-{sections_text}
-
-输出 JSON 格式:
-{{"layers": [{{"id": "layer1", "name": "层名", "nodes": [{{"id": "n1", "label": "节点名", "description": "描述"}}]}}], "connections": [{{"source": "n1", "target": "n2"}}]}}
-'''
-        
-        if self.llm:
-            try:
-                response = self.llm.chat(prompt)
-                json_match = re.search(r'```json\s*(.*?)\s*```', response, re.DOTALL)
-                if json_match:
-                    json_str = json_match.group(1)
-                else:
-                    json_str = response.strip()
-                
-                arch_data = json.loads(json_str)
-                arch_data = self._normalize_node_labels(arch_data, ci_data)
-                with open(output_path, "w", encoding="utf-8") as f:
-                    json.dump(arch_data, f, ensure_ascii=False, indent=2)
-            except json.JSONDecodeError:
+                print("  [OK] ARCHITECTURE_JSON 提取成功")
+                return True
+            except json.JSONDecodeError as e:
+                print(f"  [ERROR] ARCHITECTURE_JSON 解析失败: {e}")
                 self._save_empty_architecture_json(output_path)
-        else:
-            self._save_empty_architecture_json(output_path)
+                return False
+        
+        # 未找到 ARCHITECTURE_JSON 标记
+        print("  [ERROR] 未找到 ARCHITECTURE_JSON 标记")
+        self._save_empty_architecture_json(output_path)
+        return False
     
     def _extract_valid_triggers(self, ci_data: Dict) -> set:
         """从 ci_data 中提取项目实际使用的触发类型"""
@@ -159,16 +151,6 @@ class QualityCheckAgent(BaseAgent):
                         node["label"] = f"{label}.yml"
         
         return arch_data
-    
-    def _extract_sections(self, content: str) -> list:
-        """提取所有章节标题"""
-        sections = []
-        pattern = r'^(#{2,4})\s+(.+)$'
-        for match in re.finditer(pattern, content, re.MULTILINE):
-            level = len(match.group(1))
-            title = match.group(2).strip()
-            sections.append({"level": level, "title": title})
-        return sections
     
     def _save_empty_architecture_json(self, output_path: str) -> None:
         """保存空的架构图 JSON"""

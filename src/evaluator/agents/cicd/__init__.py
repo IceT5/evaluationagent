@@ -7,7 +7,6 @@
 - ResultMergingAgent: 合并多个LLM响应
 - QualityCheckAgent: 验证报告质量
 - RetryHandlingAgent: 处理重试和补充模式
-- ArchitectureValidationAgent: 验证和补充架构数据
 - StageOrganizationAgent: 根据架构图组织报告阶段
 - ReportGenerationAgent: 生成最终报告
 - SummaryGenerationAgent: 生成分析摘要
@@ -20,7 +19,6 @@ from evaluator.agents.cicd.llm_invocation_agent import LLMInvocationAgent
 from evaluator.agents.cicd.result_merging_agent import ResultMergingAgent
 from evaluator.agents.cicd.quality_check_agent import QualityCheckAgent
 from evaluator.agents.cicd.retry_handling_agent import RetryHandlingAgent
-from evaluator.agents.cicd.architecture_validation_agent import ArchitectureValidationAgent
 from evaluator.agents.cicd.stage_organization_agent import StageOrganizationAgent
 from evaluator.agents.cicd.report_generation_agent import ReportGenerationAgent, SummaryGenerationAgent
 from evaluator.agents.cicd.orchestrator import CICDOrchestrator
@@ -38,7 +36,6 @@ __all__ = [
     "QualityCheckAgent",
     # 新增子Agent
     "RetryHandlingAgent",
-    "ArchitectureValidationAgent",
     "StageOrganizationAgent",
     "ReportGenerationAgent",
     "SummaryGenerationAgent",

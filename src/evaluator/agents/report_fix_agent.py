@@ -79,6 +79,19 @@ class ReportFixAgent(BaseAgent):
             print("  无问题需要修复")
             return {"fix_result": {"status": "no_issues"}}
         
+        # 检测报告问题（md_issue / html_issue），需要重试整个分析流程
+        report_issues = [i for i in issues if i.get("type") in ("md_issue", "html_issue")]
+        if report_issues:
+            print(f"  发现 {len(report_issues)} 个报告问题，需要重试整个分析流程")
+            for issue in report_issues:
+                print(f"    - [{issue.get('type')}] {issue.get('message')}")
+            return {
+                "fix_result": {"status": "retry"},
+                "review_retry_count": retry_count + 1,
+                "cicd_retry_mode": "retry",
+                "cicd_retry_issues": report_issues,
+            }
+        
         data_fixable = [i for i in issues if i.get("type") in DataFixMethod.SUPPORTED_TYPES]
         llm_fixable = [i for i in issues if i.get("type") in LLMFixMethod.SUPPORTED_TYPES]
         
