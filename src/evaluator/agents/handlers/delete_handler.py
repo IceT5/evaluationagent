@@ -17,7 +17,7 @@ class DeleteHandlerAgent(BaseAgent):
             name="DeleteHandlerAgent",
             description="删除项目或版本",
             category="handler",
-            inputs=["params.project", "params.version"],
+            inputs=["params"],
             outputs=["delete_result"],
             dependencies=[],
         )

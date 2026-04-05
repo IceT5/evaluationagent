@@ -17,7 +17,7 @@ class InfoHandlerAgent(BaseAgent):
             name="InfoHandlerAgent",
             description="显示项目详细信息",
             category="handler",
-            inputs=["params.project", "params.version"],
+            inputs=["params"],
             outputs=["info_result"],
             dependencies=[],
         )

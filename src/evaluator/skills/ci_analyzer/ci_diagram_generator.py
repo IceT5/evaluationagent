@@ -1114,6 +1114,24 @@ def _generate_round_2() -> str:
 1. 不要输出ASCII架构图
 2. 只输出JSON数据
 
+## 多轮对话延续性
+
+1. Round 2 是 Round 1 的延续，不是重新设计
+2. 本轮任务：将 Round 1 的阶段划分转换为 JSON 格式（格式转换，不做决策）
+
+## 阶段划分一致性要求
+
+1. 必须沿用 Round 1 已确定的阶段划分
+2. 映射规则：Round 1 的每个阶段 → JSON 的一个 layer
+3. layers 数组长度 = Round 1 识别的阶段数量
+
+**禁止行为**：
+- ❌ 合并阶段（如将多个阶段合并为"工作流层"）
+- ❌ 简化结构
+- ❌ 重新分类或重新命名
+
+## JSON格式规范
+
 **必须使用以下格式**：
 <!-- ARCHITECTURE_JSON
 {
@@ -1128,14 +1146,21 @@ def _generate_round_2() -> str:
     },
     {
       "id": "layer-2",
-      "name": "主CI入口",
+      "name": "项目自动化",
       "nodes": [
-        {"id": "node-2-1", "label": "workflow-name.yml", "description": "工作流描述", "jobs": 5, "calls_scripts": ["script1.sh"]}
+        {"id": "node-2-1", "label": "auto-assign.yml", "description": "自动分配", "jobs": 1}
+      ]
+    },
+    {
+      "id": "layer-3",
+      "name": "代码质量检查",
+      "nodes": [
+        {"id": "node-3-1", "label": "pr-check.yml", "description": "PR检查", "jobs": 2}
       ]
     }
   ],
   "connections": [
-    {"source": "node-1-1", "target": "node-2-1"},
+    {"source": "node-1-1", "target": "node-3-1"},
     {"source": "node-1-2", "target": "node-2-1"}
   ]
 }
@@ -1145,7 +1170,7 @@ ARCHITECTURE_JSON -->
 - layers: 架构层数组，按执行顺序排列
 - 每个layer包含：
   - id: 层唯一标识
-  - name: 层名称（如"触发入口"、"项目自动化"、"代码检查"等）
+  - name: 层名称（必须与 Round 1 的阶段名称一致）
   - nodes: 该层的节点数组
 - 每个node包含：
   - id: 节点唯一标识
@@ -1158,7 +1183,16 @@ ARCHITECTURE_JSON -->
   - target: 目标节点ID
   - 规则：触发层节点→被触发的工作流节点，工作流节点→调用的脚本/外部系统
 
-**示例输出**：
+## 正确示例
+
+假设 Round 1 识别了以下阶段：
+- 阶段一：触发入口
+- 阶段二：项目自动化
+- 阶段三：代码质量检查
+- 阶段四：测试验证
+
+则 JSON 应有 **4个 layer**：
+
 <!-- ARCHITECTURE_JSON
 {
   "layers": [
@@ -1171,16 +1205,51 @@ ARCHITECTURE_JSON -->
       ]
     },
     {
-      "id": "layer-workflow",
-      "name": "工作流层",
+      "id": "layer-automation",
+      "name": "项目自动化",
       "nodes": [
-        {"id": "wf-build", "label": "build.yml", "description": "构建工作流", "jobs": 3, "calls_scripts": ["build.sh"]}
+        {"id": "wf-auto-assign", "label": "auto-assign.yml", "description": "自动分配负责人", "jobs": 1},
+        {"id": "wf-label", "label": "label-issue.yml", "description": "自动标签", "jobs": 1}
+      ]
+    },
+    {
+      "id": "layer-quality",
+      "name": "代码质量检查",
+      "nodes": [
+        {"id": "wf-pr-check", "label": "pr-check.yml", "description": "PR格式检查", "jobs": 2},
+        {"id": "wf-lint", "label": "lint.yml", "description": "代码风格检查", "jobs": 1}
+      ]
+    },
+    {
+      "id": "layer-test",
+      "name": "测试验证",
+      "nodes": [
+        {"id": "wf-test", "label": "test.yml", "description": "单元测试", "jobs": 3}
       ]
     }
   ],
   "connections": [
-    {"source": "trigger-push", "target": "wf-build"},
-    {"source": "trigger-pr", "target": "wf-build"}
+    {"source": "trigger-pr", "target": "wf-pr-check"},
+    {"source": "trigger-pr", "target": "wf-test"}
+  ]
+}
+ARCHITECTURE_JSON -->
+
+## 错误示例
+
+❌ **错误**：将多个阶段合并为"工作流层"
+
+<!-- ARCHITECTURE_JSON
+{
+  "layers": [
+    {
+      "name": "触发入口",
+      "nodes": [...]
+    },
+    {
+      "name": "工作流层",  // ❌ 错误：擅自合并了"项目自动化"、"代码质量检查"、"测试验证"三个阶段
+      "nodes": [...]
+    }
   ]
 }
 ARCHITECTURE_JSON -->

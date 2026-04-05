@@ -108,6 +108,13 @@ class EvaluatorState(TypedDict, total=False):
     recommendations: List[Dict]
     quick_wins: List[Dict]
     reflection_result: Optional[Dict]
+    best_practices: List[Dict]  # RecommendationAgent 输出的最佳实践列表
+    
+    # ========== 处理器输出 ==========
+    list_result: Optional[Dict]
+    info_result: Optional[Dict]
+    delete_result: Optional[Dict]
+    help_result: Optional[Dict]
     
     # ========== 控制流 ==========
     should_download: Optional[bool]
@@ -143,6 +150,7 @@ class EvaluatorState(TypedDict, total=False):
     version_b: Optional[str]
     dimensions: Optional[List[str]]
     comparison_result: Optional[Dict]
+    comparison_dir: Optional[str]  # CompareAgent 输出的对比结果目录路径
     
     # ========== LLM配置 ==========
     llm: Optional[Any]

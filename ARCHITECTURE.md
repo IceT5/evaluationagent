@@ -1,7 +1,7 @@
 # Eval-Agent 架构设计文档
 
-> 版本: 2.2.0  
-> 最后更新: 2026-03-23  
+> 版本: 2.3.0  
+> 最后更新: 2026-04-05  
 > 状态: 设计确认
 
 ---
@@ -167,10 +167,10 @@ extract → plan → invoke → merge → check → retry? → validate → orga
 - ResultMergingAgent: 合并结果
 - QualityCheckAgent: 质量检查
 - RetryHandlingAgent: 重试处理
-- ArchitectureValidationAgent: 架构验证
 - StageOrganizationAgent: 阶段组织
 - ReportGenerationAgent: 报告生成
 - SummaryGenerationAgent: 摘要生成
+- ReportFixAgent: 修复报告问题
 ```
 
 ---
@@ -232,77 +232,399 @@ class MyAgent(BaseAgent):
 | **CICD子Agent** | ResultMergingAgent | 合并结果 |
 | **CICD子Agent** | QualityCheckAgent | 质量检查 |
 | **CICD子Agent** | RetryHandlingAgent | 重试处理 |
-| **CICD子Agent** | ArchitectureValidationAgent | 架构验证 |
 | **CICD子Agent** | StageOrganizationAgent | 阶段组织 |
 | **CICD子Agent** | ReportGenerationAgent | 报告生成 |
 | **CICD子Agent** | SummaryGenerationAgent | 摘要生成 |
+| **修复Agent** | ReportFixAgent | 修复报告问题 |
+
+### 4.3 Agent详细说明
+
+#### 入口Agent
+
+**IntentParserAgent**
+- 职责：解析用户意图，判断是命令还是自然语言
+- 输入：user_input
+- 输出：intent, params
+- 调用关系：main_graph入口 → IntentParserAgent
+
+**InputAgent**
+- 职责：解析项目路径或URL，判断输入类型
+- 输入：user_input, params
+- 输出：project_name, project_path, project_url, should_download
+- 调用关系：OrchestratorAgent决策后 → InputAgent
+
+**LoaderAgent**
+- 职责：下载/克隆远程项目，初始化存储目录
+- 输入：project_name, project_url, project_path, should_download
+- 输出：project_path, clone_status, storage_version_id, storage_dir
+- 调用关系：InputAgent之后 → LoaderAgent → GitOperations/StorageManager
+
+#### 功能Agent
+
+**CICDAgent**
+- 职责：CI/CD架构分析的主入口，内部由CICDOrchestrator编排
+- 输入：project_path, storage_dir
+- 输出：cicd_analysis, report_md, architecture_json, analysis_summary
+- 调用关系：LoaderAgent之后 → CICDAgent → CICDOrchestrator
+
+**ReviewerAgent**
+- 职责：验证报告准确性，检查遗漏和错误
+- 输入：report_md, ci_data, architecture_json
+- 输出：review_result, review_issues
+- 调用关系：CICDAgent之后 → ReviewerAgent
+
+**ReporterAgent**
+- 职责：生成交互式HTML报告
+- 输入：report_md, architecture_json, analysis_summary
+- 输出：report_html
+- 调用关系：ReviewerAgent之后 → ReporterAgent
+
+**CompareAgent**
+- 职责：对比两个项目的CI/CD架构
+- 输入：project_a, project_b, version_a, version_b
+- 输出：comparison_result, comparison_dir
+- 调用关系：Orchestrator决策后 → CompareAgent
+
+#### 编排Agent
+
+**OrchestratorAgent**
+- 职责：规划工作流，动态决策下一步
+- 输入：intent, 当前state
+- 输出：orchestrator_decision (next_step, workflow)
+- 调用关系：IntentParserAgent之后 → OrchestratorAgent
+
+**CICDOrchestrator**
+- 职责：编排CI/CD分析的子Agent序列
+- 编排流程：extract → plan → invoke → merge → check → retry? → organize → report → summary
+- 输入：project_path, storage_dir
+- 输出：所有CICD子Agent的输出
+- 调用关系：CICDAgent内部 → CICDOrchestrator → 各CICD子Agent
+
+**IntelligencePipeline**
+- 职责：编排智能Agent链（异步执行）
+- 编排流程：StorageAgent → RecommendationAgent → ReflectionAgent
+- 输入：storage_dir, project_name, ci_data
+- 输出：insights.json
+- 调用关系：ReporterAgent完成后（异步） → IntelligencePipeline
+
+#### CICD子Agent
+
+**DataExtractionAgent**
+- 职责：从项目目录提取CI/CD配置数据
+- 输入：project_path, storage_dir
+- 输出：ci_data, ci_data_path, workflow_count
+- 调用关系：CICDOrchestrator → DataExtractionAgent → CIAnalyzer
+
+**AnalysisPlanningAgent**
+- 职责：决定分析策略（单次/并发/跳过）
+- 输入：ci_data, workflow_count
+- 输出：strategy, prompts
+- 调用关系：CICDOrchestrator → AnalysisPlanningAgent
+
+**LLMInvocationAgent**
+- 职责：执行LLM调用（单次/并发）
+- 输入：prompts, strategy
+- 输出：llm_responses
+- 调用关系：CICDOrchestrator → LLMInvocationAgent → LLMClient
+
+**ResultMergingAgent**
+- 职责：合并多个LLM响应
+- 输入：llm_responses
+- 输出：merged_response
+- 调用关系：CICDOrchestrator → ResultMergingAgent
+
+**QualityCheckAgent**
+- 职责：验证报告质量
+- 输入：merged_response
+- 输出：validation_result, retry_issues
+- 调用关系：CICDOrchestrator → QualityCheckAgent
+
+**RetryHandlingAgent**
+- 职责：处理重试/补充模式
+- 输入：retry_issues, retry_count
+- 输出：retry_mode, 补充内容
+- 调用关系：CICDOrchestrator（如需重试） → RetryHandlingAgent → LLMClient
+
+**StageOrganizationAgent**
+- 职责：组织工作流到阶段
+- 输入：merged_response, ci_data
+- 输出：组织后的报告内容
+- 调用关系：CICDOrchestrator → StageOrganizationAgent
+
+**ReportGenerationAgent**
+- 职责：生成最终Markdown报告
+- 输入：merged_response, architecture_json
+- 输出：report_md, architecture_json
+- 调用关系：CICDOrchestrator → ReportGenerationAgent
+
+**SummaryGenerationAgent**
+- 职责：生成分析摘要
+- 输入：report_md, ci_data
+- 输出：analysis_summary
+- 调用关系：CICDOrchestrator → SummaryGenerationAgent
+
+**ReportFixAgent**
+- 职责：修复报告中的问题
+- 输入：review_issues, report_md, ci_data
+- 输出：corrected_report
+- 调用关系：ReviewerAgent之后（如有问题） → ReportFixAgent → LLMClient
+
+#### 智能Agent
+
+**StorageAgent**
+- 职责：存储分析结果，检索相似项目
+- 输入：storage_dir, project_name, ci_data
+- 输出：similar_projects
+- 调用关系：IntelligencePipeline → StorageAgent
+
+**RecommendationAgent**
+- 职责：生成改进建议和最佳实践
+- 输入：ci_data, analysis_summary
+- 输出：recommendations, quick_wins
+- 调用关系：IntelligencePipeline → RecommendationAgent
+
+**ReflectionAgent**
+- 职责：执行历史反思和性能分析
+- 输入：project_name, analysis_summary
+- 输出：reflection_result
+- 调用关系：IntelligencePipeline → ReflectionAgent
+
+#### 处理Agent
+
+**ListHandlerAgent / InfoHandlerAgent / DeleteHandlerAgent / HelpHandlerAgent**
+- 职责：处理对应的简单命令（list/info/delete/help）
+- 输入：params
+- 输出：对应的结果
+- 调用关系：Orchestrator决策后 → 对应HandlerAgent
 
 ---
 
-## 五、状态设计
+## 五、Agent调用关系
 
-### 5.1 EvaluatorState 定义
+### 5.1 主工作流调用图
+
+```
+用户输入
+    │
+    ▼
+IntentParserAgent ─────────────────┐
+    │                               │
+    │ intent, params                │
+    ▼                               │
+OrchestratorAgent                   │
+    │                               │
+    ├─ analyze意图                   │
+    │   │                           │
+    │   ▼                           │
+    │  InputAgent                   │
+    │   │                           │
+    │   │ project_name/path/url     │
+    │   ▼                           │
+    │  LoaderAgent                  │
+    │   │                           │
+    │   │ storage_dir               │
+    │   ▼                           │
+    │  CICDAgent                    │
+    │   │                           │
+    │   │ (内部CICDOrchestrator)    │
+    │   │   │                       │
+    │   │   ├─ DataExtractionAgent  │
+    │   │   ├─ AnalysisPlanningAgent│
+    │   │   ├─ LLMInvocationAgent   │
+    │   │   ├─ ResultMergingAgent   │
+    │   │   ├─ QualityCheckAgent    │
+    │   │   ├─ RetryHandlingAgent?  │
+    │   │   ├─ StageOrganizationAgent│
+    │   │   ├─ ReportGenerationAgent│
+    │   │   └─ SummaryGenerationAgent│
+    │   │                           │
+    │   │ report_md, architecture   │
+    │   ▼                           │
+    │  ReviewerAgent                │
+    │   │                           │
+    │   │ review_result, issues     │
+    │   ▼                           │
+    │  ReportFixAgent? (如有问题)   │
+    │   │                           │
+    │   │ corrected_report          │
+    │   ▼                           │
+    │  ReporterAgent                │
+    │   │                           │
+    │   │ report_html               │
+    │   ▼                           │
+    │  [异步] IntelligencePipeline  │
+    │   │                           │
+    │   │ ├─ StorageAgent           │
+    │   │ ├─ RecommendationAgent    │
+    │   │ └─ ReflectionAgent        │
+    │   │                           │
+    │   └───────────────────────────┘
+    │
+    ├─ compare意图
+    │   └─ CompareAgent
+    │
+    ├─ list/info/delete意图
+    │   └─ 对应HandlerAgent
+    │
+    └─ help意图
+        └─ HelpHandlerAgent
+```
+
+### 5.2 数据流转图
+
+```
+user_input
+    │
+    ▼
+intent, params ───────────────────┐
+    │                             │
+    ▼                             │
+project_name, project_path/url    │
+    │                             │
+    ▼                             │
+storage_dir, storage_version_id   │
+    │                             │
+    ▼                             │
+ci_data, workflow_count           │
+    │                             │
+    ▼                             │
+prompts, strategy                 │
+    │                             │
+    ▼                             │
+llm_responses                     │
+    │                             │
+    ▼                             │
+merged_response                   │
+    │                             │
+    ▼                             │
+validation_result, retry_issues   │
+    │                             │
+    ├─ 如需重试 ──┐               │
+    │             │               │
+    │             ▼               │
+    │         retry_mode          │
+    │             │               │
+    │             └───────┐       │
+    │                     │       │
+    ▼                     ▼       │
+report_md, architecture_json      │
+    │                             │
+    ▼                             │
+review_result, review_issues      │
+    │                             │
+    ├─ 如有问题 ──┐               │
+    │             │               │
+    │             ▼               │
+    │     corrected_report        │
+    │             │               │
+    │             └───────┐       │
+    │                     │       │
+    ▼                     ▼       │
+report_html                       │
+    │                             │
+    ▼                             │
+[异步] insights.json ─────────────┘
+```
+
+### 5.3 路由函数说明
+
+| 路由函数 | 触发条件 | 下一步 |
+|---------|---------|--------|
+| route_after_input | 有errors | error_handler |
+| route_after_input | should_download=True | orchestrator |
+| route_after_input | 其他 | skip |
+| route_after_loader | 有errors | error_handler |
+| route_after_loader | 无project_path | skip |
+| route_after_loader | 其他 | orchestrator |
+| route_after_cicd | status=no_cicd | skip |
+| route_after_cicd | status=failed且重试次数<最大值 | cicd |
+| route_after_cicd | 其他 | orchestrator |
+| route_after_review | review_result=issues_found | report_fix |
+| route_after_review | 其他 | orchestrator |
+| route_after_report_fix | fix_result=supplement | reviewer |
+| route_after_report_fix | fix_result=retry | cicd |
+| route_after_report_fix | 其他 | orchestrator |
+
+---
+
+## 六、状态设计
+
+### 5.1 EvaluatorState定义
 
 ```python
 class EvaluatorState(TypedDict, total=False):
-    # 用户输入
+    # ========== UI管理 ==========
+    ui_manager: Optional[Any]
+    
+    # ========== 用户输入 ==========
     user_input: Optional[str]
     intent: Optional[str]
     params: Dict[str, Any]
-
-    # 项目信息
+    
+    # ========== 项目信息 ==========
     project_name: Optional[str]
     project_path: Optional[str]
+    project_url: Optional[str]
     display_name: Optional[str]
-
-    # CI/CD数据
+    
+    # ========== 存储信息 ==========
+    storage_version_id: Optional[str]
+    storage_dir: Optional[str]
+    
+    # ========== CI/CD数据 ==========
     ci_data: Optional[Dict]
+    ci_data_path: Optional[str]
     workflow_count: int
-
-    # 分析结果
+    actions_count: int
+    
+    # ========== 分析策略 ==========
+    strategy: Optional[str]  # single/parallel/skip
+    prompts: List[str]
+    llm_responses: List[str]
+    merged_response: Optional[str]
+    
+    # ========== 分析结果 ==========
     cicd_analysis: Optional[Dict]
+    validation_result: Optional[Dict]
+    report_md: Optional[str]
     report_html: Optional[str]
-
-    # 智能Agent输出
+    architecture_json: Optional[Dict]
+    analysis_summary: Optional[Dict]
+    
+    # ========== Review结果 ==========
+    review_result: Optional[Dict]
+    review_issues: List[Dict]
+    corrected_report: Optional[str]
+    fix_result: Optional[Dict]
+    
+    # ========== 智能Agent输出 ==========
     similar_projects: List[Dict]
     recommendations: List[Dict]
     reflection_result: Optional[Dict]
-
-    # 控制流 (使用Reducer)
+    
+    # ========== 控制流（使用Reducer）==========
     errors: Annotated[List[str], merge_errors]
+    warnings: Annotated[List[str], merge_warnings]
     completed_steps: Annotated[List[str], merge_steps]
 ```
 
-### 5.2 CICDState 定义
+### 5.2 字段分组说明
 
-```python
-class CICDState(TypedDict, total=False):
-    # 输入
-    project_path: str
-    storage_dir: Optional[str]
-    
-    # 数据提取
-    ci_data: Optional[Dict]
-    workflow_count: int
-    
-    # 分析策略
-    strategy: str
-    prompts: List[str]
-    
-    # 执行结果
-    llm_responses: List[str]
-    merged_response: str
-    
-    # 质量与重试
-    validation_result: Optional[Dict]
-    retry_count: int
-    retry_mode: Optional[str]
-    retry_issues: List[Dict]
-```
+| 分组 | 主要字段 | 说明 |
+|-----|---------|------|
+| 用户输入 | user_input, intent, params | 用户输入和解析结果 |
+| 项目信息 | project_name/path/url, display_name | 项目基本信息 |
+| 存储信息 | storage_version_id, storage_dir | 存储位置信息 |
+| CI/CD数据 | ci_data, workflow_count, actions_count | 提取的CI/CD配置数据 |
+| 分析策略 | strategy, prompts | 分析策略和生成的prompts |
+| 分析结果 | cicd_analysis, report_md/html, architecture_json | 分析输出结果 |
+| Review结果 | review_result, review_issues, corrected_report | Review验证和修复结果 |
+| 智能输出 | similar_projects, recommendations, reflection_result | 智能Agent输出 |
+| 控制流 | errors, warnings, completed_steps | 流程控制和状态追踪 |
 
 ---
 
-## 六、后台任务机制
+## 七、后台任务机制
 
 ### 6.1 BackgroundTasks
 
@@ -330,7 +652,7 @@ class BackgroundTasks:
 
 ---
 
-## 七、计划功能（未来）
+## 八、计划功能（未来）
 
 ### 7.1 Checkpointer（LangGraph状态持久化）
 
@@ -359,7 +681,7 @@ workflow.compile(checkpointer=checkpointer)
 
 ---
 
-## 八、CLI命令
+## 九、CLI命令
 
 | 命令 | 说明 |
 |------|------|
@@ -375,7 +697,7 @@ workflow.compile(checkpointer=checkpointer)
 
 ---
 
-## 八、文件结构规范
+## 十、文件结构规范
 
 ```
 src/evaluator/
@@ -400,7 +722,6 @@ src/evaluator/
 │   │   ├── result_merging_agent.py
 │   │   ├── quality_check_agent.py
 │   │   ├── retry_handling_agent.py
-│   │   ├── architecture_validation_agent.py
 │   │   ├── stage_organization_agent.py
 │   │   ├── report_generation_agent.py
 │   │   └── summary_generation_agent.py
@@ -417,7 +738,7 @@ src/evaluator/
 
 ---
 
-## 八、中断机制
+## 十一、中断机制
 
 ### 8.1 概述
 
@@ -498,16 +819,17 @@ interrupt_controller.register_callback(my_cleanup_fn)
 
 ---
 
-## 九、变更记录
+## 十二、变更记录
 
 | 版本 | 日期 | 变更内容 |
 |------|------|---------|
+| 2.3.0 | 2026-04-05 | 更新Agent列表，添加详细说明和调用关系图 |
 | 2.1.0 | 2026-03-21 | CLI 使用 LangGraph 统一工作流 |
 | 2.0.0 | 2026-03-21 | 架构重构：统一 LangGraph 编排 |
 
 ---
 
-## 十、附录
+## 十三、附录
 
 ### A. 术语表
 

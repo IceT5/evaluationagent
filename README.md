@@ -56,6 +56,10 @@ data/                  # 数据目录
 └── comparisons/       # 对比结果
 ```
 
+**详细架构说明**：见 [ARCHITECTURE.md](./ARCHITECTURE.md)
+
+**开发指南**：见 [AGENTS.md](./AGENTS.md)
+
 ## 安装
 
 ### 环境要求
@@ -86,40 +90,139 @@ pip install -e ".[dev]"
 cp .env.example .env
 ```
 
-编辑 `.env`：
-
-```env
-# OpenAI API (支持 OpenAI 兼容 API)
-OPENAI_API_KEY=your-api-key-here
-OPENAI_BASE_URL=https://api.openai.com/v1
-
-# 分析设置
-DEFAULT_MODEL=gpt-4o-mini
-MAX_TOKENS=4096
-
-# UI 设置
-USE_RICH=true
-```
-
 ### 环境变量说明
+
+#### LLM 配置
 
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `OPENAI_API_KEY` | LLM API Key（必需） | - |
-| `OPENAI_BASE_URL` | API 地址 | https://api.openai.com/v1 |
+| `OPENAI_BASE_URL` | API 地址（支持 OpenAI 兼容 API） | https://api.openai.com/v1 |
 | `DEFAULT_MODEL` | 默认模型 | gpt-4o-mini |
-| `MAX_TOKENS` | 最大 token 数 | 4096 |
-| `USE_RICH` | 使用 Rich 终端美化 | true |
-| `EVALUATOR_ENV_FILE` | 自定义 .env 路径 | - |
 
-### 打包后配置
+#### 数据存储配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_DATA_DIR` | 数据存储目录 | 用户目录（Windows: `%APPDATA%/eval-agent/data`，Linux/Mac: `~/.eval-agent/data`） |
+
+#### 重试配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_MAX_RETRIES` | 业务逻辑最大重试次数 | 3 |
+| `EVAL_LLM_MAX_RETRIES` | LLM 调用最大重试次数 | 5 |
+| `EVAL_LLM_RETRY_DELAY` | LLM 重试基础延迟（秒），实际延迟 = base_delay × attempt | 1.0 |
+
+#### 并发配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_MAX_WORKERS` | 后台任务线程数 | 1 |
+| `EVAL_LLM_WORKERS` | Review 并发数 | 4 |
+| `EVAL_LLM_CONCURRENT` | LLM 并发调用数 | 4 |
+
+#### 超时配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_GIT_TIMEOUT` | Git 克隆超时（秒） | 300 |
+| `EVAL_LLM_REQUEST_TIMEOUT` | LLM HTTP 请求超时（秒） | 300 |
+| `EVAL_LLM_TIMEOUT` | LLM 调用超时（秒） | 600 |
+
+#### LLM 输出配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_LLM_MAX_TOKENS` | LLM 最大输出 token | 131072 |
+
+#### 报告配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `EVAL_MAX_SECTION_LENGTH` | 报告最大章节长度 | 3000 |
+| `EVAL_MAX_WORKFLOWS_SINGLE` | 单次 prompt 最大工作流数 | 10 |
+| `EVAL_MAX_WORKFLOWS_BATCH` | 每批工作流数 | 10 |
+
+#### UI 配置
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `USE_RICH` | 使用 Rich 终端美化 | true |
+
+#### LangSmith 追踪配置（可选）
+
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `LANGCHAIN_TRACING_V2` | 启用 LangSmith 追踪 | false |
+| `LANGSMITH_API_KEY` | LangSmith API Key（从 https://smith.langchain.com 获取） | - |
+| `LANGSMITH_PROJECT` | LangSmith 项目名称 | eval-agent |
+
+### 配置优先级
+
+配置按以下优先级加载（高优先级覆盖低优先级）：
+
+1. **系统环境变量**（最高优先级）
+2. **.env 文件**
+3. **默认值**（最低优先级）
+
+### 打包后配置查找顺序
 
 打包成二进制后，`.env` 文件按以下优先级查找：
 
 1. `EVALUATOR_ENV_FILE` 环境变量指定的自定义路径
 2. **运行命令的当前目录** `.env`
 3. **二进制同目录** `.env`
-4. `~/.evaluator/.env`
+4. `~/.evaluator/.env`（用户主目录）
+
+### 配置示例
+
+**最小配置**（仅必需项）：
+```env
+OPENAI_API_KEY=your-api-key-here
+```
+
+**完整配置**（所有可选项）：
+```env
+# LLM 配置
+OPENAI_API_KEY=your-api-key-here
+OPENAI_BASE_URL=https://api.openai.com/v1
+DEFAULT_MODEL=gpt-4o-mini
+
+# 数据存储配置
+EVAL_DATA_DIR=/path/to/data
+
+# 重试配置
+EVAL_MAX_RETRIES=3
+EVAL_LLM_MAX_RETRIES=5
+EVAL_LLM_RETRY_DELAY=1.0
+
+# 并发配置
+EVAL_MAX_WORKERS=1
+EVAL_LLM_WORKERS=4
+EVAL_LLM_CONCURRENT=4
+
+# 超时配置
+EVAL_GIT_TIMEOUT=300
+EVAL_LLM_REQUEST_TIMEOUT=300
+EVAL_LLM_TIMEOUT=600
+
+# LLM 输出配置
+EVAL_LLM_MAX_TOKENS=131072
+
+# 报告配置
+EVAL_MAX_SECTION_LENGTH=3000
+EVAL_MAX_WORKFLOWS_SINGLE=10
+EVAL_MAX_WORKFLOWS_BATCH=10
+
+# UI 配置
+USE_RICH=true
+
+# LangSmith 追踪（可选）
+LANGCHAIN_TRACING_V2=false
+LANGSMITH_API_KEY=your-langsmith-key
+LANGSMITH_PROJECT=eval-agent
+```
 
 ## 使用
 
@@ -283,4 +386,4 @@ pyinstaller eval-agent.exe.spec
 
 ## License
 
-MIT
+Apache License 2.0. See [LICENSE](./LICENSE) for details.

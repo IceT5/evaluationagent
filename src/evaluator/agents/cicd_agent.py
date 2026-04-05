@@ -24,6 +24,13 @@ except ImportError:
     HAS_LLM = False
     LLMClient = None
 
+try:
+    from evaluator.core.interrupt import InterruptException
+    HAS_INTERRUPT = True
+except ImportError:
+    HAS_INTERRUPT = False
+    InterruptException = Exception
+
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -109,6 +116,16 @@ class CICDAgent(BaseAgent):
                 # 成功或不需要重试
                 break
                 
+            except InterruptException:
+                # 用户中断：立即停止，不重试
+                print(f"\n⚠️  用户中断，停止执行")
+                return {
+                    **state,
+                    "current_step": "cicd",
+                    "cicd_analysis": {"status": "interrupted", "error": "用户中断"},
+                    "errors": state.get("errors", []) + ["用户中断"],
+                }
+                
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -158,6 +175,8 @@ class CICDAgent(BaseAgent):
                 "workflows_count": workflow_count,
                 "actions_count": actions_count,
                 "ci_data_path": result_state.get("ci_data_path"),
+                # 字段名映射：内部 state 使用 report_md，对外接口 cicd_analysis 使用 report_path
+                # 这样保持向后兼容，同时内部代码使用统一的命名规范
                 "report_path": result_state.get("report_md"),
                 "architecture_json_path": result_state.get("architecture_json_path"),
                 "analysis_summary_path": f"{output_dir}/analysis_summary.json",

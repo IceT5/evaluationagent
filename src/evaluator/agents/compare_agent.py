@@ -20,6 +20,12 @@ try:
 except ImportError:
     HAS_LLM = False
 
+try:
+    from markdown_it import MarkdownIt
+    HAS_MARKDOWN = True
+except ImportError:
+    HAS_MARKDOWN = False
+
 
 class CompareInput(TypedDict):
     project_a: str
@@ -126,7 +132,10 @@ class CompareAgent(BaseAgent):
                 )
                 dim_results.append(result)
 
-            scores = self._calculate_dimension_score(dim_results)
+            scores = self._calculate_dimension_score(
+                dim_results, project_a, project_b, dim_key, 
+                metrics_a.get(dim_key, {}), metrics_b.get(dim_key, {})
+            )
             dim_results_obj = DimensionResult(
                 name=dim_config["name"],
                 metrics=dim_results,
@@ -404,43 +413,79 @@ class CompareAgent(BaseAgent):
 
         return []
 
-    def _calculate_dimension_score(self, metrics: list[MetricResult]) -> dict:
-        score_a = 0
-        score_b = 0
-        total = 0
+    def _calculate_dimension_score(
+        self,
+        metrics: list[MetricResult],
+        project_a: str = "",
+        project_b: str = "",
+        dimension_key: str = "",
+        metrics_a: dict = None,
+        metrics_b: dict = None,
+    ) -> dict:
+        """计算维度得分 - 使用 LLM 判定"""
+        return self._calculate_dimension_score_with_llm(
+            project_a, project_b, dimension_key, metrics_a or {}, metrics_b or {}
+        )
+    
+    def _calculate_dimension_score_with_llm(
+        self,
+        project_a: str,
+        project_b: str,
+        dimension_key: str,
+        metrics_a: dict,
+        metrics_b: dict,
+    ) -> dict:
+        """使用 LLM 判定维度得分"""
+        
+        dimension_names = {
+            "complexity": "架构复杂度",
+            "best_practices": "最佳实践",
+            "maintainability": "可维护性",
+        }
+        dimension_name = dimension_names.get(dimension_key, dimension_key)
+        
+        prompt = f"""你是一个 CI/CD 架构专家，请评估两个项目在"{dimension_name}"维度的得分。
 
-        for m in metrics:
-            if m.value_a is None and m.value_b is None:
-                continue
-            if m.value_a is None or m.value_b is None:
-                total += 1
-                if m.value_a is None:
-                    score_b += 1
-                else:
-                    score_a += 1
-                continue
+## 项目 A: {project_a}
+指标数据：
+```json
+{json.dumps(metrics_a, indent=2, ensure_ascii=False)}
+```
 
-            total += 1
-            diff = abs(m.value_a - m.value_b)
-            max_val = max(abs(m.value_a), abs(m.value_b), 1)
+## 项目 B: {project_b}
+指标数据：
+```json
+{json.dumps(metrics_b, indent=2, ensure_ascii=False)}
+```
 
-            if m.higher_is_better:
-                if m.value_a > m.value_b:
-                    score_a += 1 + (diff / max_val) * 0.5
-                elif m.value_b > m.value_a:
-                    score_b += 1 + (diff / max_val) * 0.5
-            else:
-                if m.value_a < m.value_b:
-                    score_a += 1 + (diff / max_val) * 0.5
-                elif m.value_b < m.value_a:
-                    score_b += 1 + (diff / max_val) * 0.5
+## 评分要求
+1. 考虑项目类型和业务复杂度
+2. 不要单纯比较数量，要评估"必要的复杂度"
+3. 满分 100 分，两个项目的得分之和应该接近 100
+4. 如果一个项目明显更优，得分应该显著高于另一个
 
-        if total > 0:
-            score_a = (score_a / total) * 100
-            score_b = (score_b / total) * 100
-
-        return {"A": round(score_a, 1), "B": round(score_b, 1)}
-
+## 输出格式
+只输出 JSON，不要其他内容：
+{{"score_a": <0-100>, "score_b": <0-100>, "reasoning": "<评分理由>"}}
+"""
+        
+        try:
+            response = self.llm.chat(prompt)
+            
+            import re
+            json_match = re.search(r'\{[^{}]*"score_a"[^{}]*\}', response, re.DOTALL)
+            if json_match:
+                result = json.loads(json_match.group())
+                return {
+                    "A": round(float(result.get("score_a", 50)), 1),
+                    "B": round(float(result.get("score_b", 50)), 1),
+                }
+        except Exception as e:
+            print(f"  [WARN] LLM 评分失败: {e}，使用规则计算")
+        
+        # 回退
+        return {"A": 50.0, "B": 50.0}
+    
     def _generate_summary(
         self,
         project_a: str,
@@ -522,6 +567,23 @@ class CompareAgent(BaseAgent):
 
         return recommendations
 
+    def _markdown_to_html(self, md_text: str) -> str:
+        """将 Markdown 转换为 HTML"""
+        if not md_text:
+            return ""
+        
+        if not HAS_MARKDOWN:
+            return f"<pre style='white-space: pre-wrap;'>{md_text}</pre>"
+        
+        try:
+            md = MarkdownIt()
+            md.enable('table')  # 启用表格支持
+            html = md.render(md_text)
+            return html
+        except Exception as e:
+            print(f"  [WARN] Markdown 转 HTML 失败: {e}")
+            return f"<pre style='white-space: pre-wrap;'>{md_text}</pre>"
+
     def _dim_to_dict(self, dim: DimensionResult) -> dict:
         return {
             "name": dim.name,
@@ -550,7 +612,17 @@ class CompareAgent(BaseAgent):
 | A | {result.project_a} | {data_a.get('metadata', {}).get('version_id', 'N/A')} | {data_a.get('metadata', {}).get('analyzed_at', 'N/A')[:10]} |
 | B | {result.project_b} | {data_b.get('metadata', {}).get('version_id', 'N/A')} | {data_b.get('metadata', {}).get('analyzed_at', 'N/A')[:10]} |
 
-## 对比总结
+"""
+        
+        # 添加架构分析（如果有）
+        if result.semantic_diff:
+            md += f"""## 架构分析
+
+{result.semantic_diff}
+
+"""
+        
+        md += f"""## 对比总结
 
 {result.summary}
 
@@ -568,9 +640,10 @@ class CompareAgent(BaseAgent):
                 md += f"| {m.name} | {val_a} | {val_b} | {winner} |\n"
             md += f"\n**维度得分**: {result.project_a}={dim.score_a}分, {result.project_b}={dim.score_b}分\n\n"
 
-        md += "\n## 改进建议\n\n"
-        for i, rec in enumerate(result.recommendations, 1):
-            md += f"{i}. {rec}\n"
+        if result.recommendations:
+            md += "\n## 改进建议\n\n"
+            for i, rec in enumerate(result.recommendations, 1):
+                md += f"{i}. {rec}\n"
 
         return md
 
@@ -636,9 +709,48 @@ class CompareAgent(BaseAgent):
                 </div>
             """
 
-        recommendations_list = ""
-        for i, rec in enumerate(result.recommendations, 1):
-            recommendations_list += f"<li>{rec}</li>"
+        recommendations_section = ""
+        if result.recommendations:
+            recommendations_list = ""
+            for i, rec in enumerate(result.recommendations, 1):
+                recommendations_list += f"<li>{rec}</li>"
+            
+            recommendations_section = f"""
+        <div class="card recommendations">
+            <h3>改进建议</h3>
+            <ul>
+                {recommendations_list}
+            </ul>
+        </div>
+"""
+        
+        semantic_diff_section = ""
+        if result.semantic_diff:
+            semantic_diff_html = self._markdown_to_html(result.semantic_diff)
+            semantic_diff_section = f"""
+        <div class="card">
+            <div class="card-header">
+                <h2>架构分析</h2>
+            </div>
+            <div class="analysis-content" style="padding: 20px;">
+                {semantic_diff_html}
+            </div>
+        </div>
+"""
+        
+        summary_section = ""
+        if result.summary:
+            summary_html = self._markdown_to_html(result.summary)
+            summary_section = f"""
+        <div class="card">
+            <div class="card-header">
+                <h2>对比总结</h2>
+            </div>
+            <div class="summary-content" style="padding: 20px;">
+                {summary_html}
+            </div>
+        </div>
+"""
 
         return f"""<!DOCTYPE html>
 <html lang="zh-CN">
@@ -821,6 +933,88 @@ class CompareAgent(BaseAgent):
             color: #856404;
             margin-bottom: 8px;
         }}
+        
+        .analysis-content table,
+        .summary-content table {{
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            background: white;
+            border-radius: 8px;
+            overflow: hidden;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }}
+        
+        .analysis-content th,
+        .summary-content th {{
+            background: var(--primary);
+            color: white;
+            padding: 12px 15px;
+            text-align: left;
+            font-weight: 600;
+        }}
+        
+        .analysis-content td,
+        .summary-content td {{
+            padding: 12px 15px;
+            border-bottom: 1px solid #eee;
+            vertical-align: top;
+        }}
+        
+        .analysis-content tr:hover,
+        .summary-content tr:hover {{
+            background: #f8f9fa;
+        }}
+        
+        .analysis-content h2,
+        .summary-content h2 {{
+            color: var(--dark);
+            font-size: 20px;
+            margin: 30px 0 15px;
+            padding-bottom: 10px;
+            border-bottom: 2px solid #eee;
+        }}
+        
+        .analysis-content h3,
+        .summary-content h3 {{
+            color: var(--dark);
+            font-size: 18px;
+            margin: 25px 0 12px;
+        }}
+        
+        .analysis-content p,
+        .summary-content p {{
+            margin: 10px 0;
+            line-height: 1.8;
+        }}
+        
+        .analysis-content ul,
+        .analysis-content ol,
+        .summary-content ul,
+        .summary-content ol {{
+            margin: 10px 0 10px 20px;
+        }}
+        
+        .analysis-content li,
+        .summary-content li {{
+            margin: 5px 0;
+            line-height: 1.6;
+        }}
+        
+        .analysis-content strong,
+        .summary-content strong {{
+            color: var(--primary);
+            font-weight: 600;
+        }}
+        
+        .analysis-content code,
+        .summary-content code {{
+            background: #f1f1f1;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+        }}
     </style>
 </head>
 <body>
@@ -852,12 +1046,11 @@ class CompareAgent(BaseAgent):
         <h2 style="margin: 30px 0 20px;">维度对比</h2>
         {dimension_cards}
         
-        <div class="card recommendations">
-            <h3>改进建议</h3>
-            <ul>
-                {recommendations_list}
-            </ul>
-        </div>
+        {semantic_diff_section}
+        
+        {summary_section}
+        
+        {recommendations_section}
     </div>
 </body>
 </html>"""

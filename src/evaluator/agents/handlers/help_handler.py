@@ -69,7 +69,7 @@ class HelpHandlerAgent(BaseAgent):
             name="HelpHandlerAgent",
             description="显示帮助信息",
             category="handler",
-            inputs=["params.topic"],
+            inputs=["params"],
             outputs=["help_result"],
             dependencies=[],
         )

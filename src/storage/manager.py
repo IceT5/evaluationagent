@@ -7,6 +7,8 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+from dotenv import load_dotenv
+
 from .models import (
     ProjectMetadata,
     ProjectVersion,
@@ -26,7 +28,30 @@ class StorageManager:
         if data_dir:
             self.data_dir = Path(data_dir)
         else:
-            self.data_dir = Path(__file__).parent.parent.parent / self.DEFAULT_DATA_DIR
+            load_dotenv()
+            env_data_dir = os.getenv("EVAL_DATA_DIR")
+            if env_data_dir:
+                self.data_dir = Path(env_data_dir)
+            else:
+                # 2. 用户目录
+                if os.name == 'nt':  # Windows
+                    app_data = os.getenv('APPDATA') or os.getenv('LOCALAPPDATA')
+                    if app_data:
+                        self.data_dir = Path(app_data) / "eval-agent" / "data"
+                    else:
+                        self.data_dir = Path.home() / ".eval-agent" / "data"
+                else:  # Linux/Mac
+                    self.data_dir = Path.home() / ".eval-agent" / "data"
+                
+                # 3. 开发环境（仅在用户目录不存在时）
+                if not self.data_dir.exists():
+                    project_root = Path(__file__).parent.parent.parent
+                    dist_data = project_root / "dist" / "eval-agent" / "data"
+                    if dist_data.exists():
+                        self.data_dir = dist_data
+                    else:
+                        # 4. 项目根目录
+                        self.data_dir = project_root / self.DEFAULT_DATA_DIR
 
         self.projects_dir = self.data_dir / self.PROJECTS_DIR
         self.comparisons_dir = self.data_dir / self.COMPARISONS_DIR

@@ -662,20 +662,44 @@ class LLMInvocationAgent(BaseAgent):
         
         print(f"  [LLM] 并发调用 {len(prompts)} 个 prompt...")
         
-        use_runnable = False
-        try:
-            from langchain_core.runnables import RunnableParallel, RunnableLambda
-            use_runnable = True
-        except ImportError:
-            pass
-        
-        if use_runnable:
-            return self._parallel_calls_with_runnable(prompts)
-        else:
-            return self._parallel_calls_with_threadpool(prompts)
+        # LangChain 是必需依赖，直接使用 RunnableParallel
+        return self._parallel_calls_with_runnable(prompts)
     
     def _parallel_calls_with_runnable(self, prompts: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """使用 RunnableParallel 并发调用（自动关联 trace）"""
+        """使用 RunnableParallel 并发调用（自动关联 trace）
+        
+        分批执行以限制并发数，同时保留 LangSmith trace 支持。
+        """
+        from langchain_core.runnables import RunnableParallel, RunnableLambda
+        
+        max_concurrent = _get_concurrent_calls()  # 获取并发数限制
+        total_prompts = len(prompts)
+        
+        if max_concurrent >= total_prompts:
+            # 如果并发数 >= 任务数，直接并发所有任务
+            return self._execute_batch(prompts, 0, total_prompts)
+        
+        # 分批执行
+        print(f"  [LLM] 分批执行：每批最多 {max_concurrent} 个任务")
+        
+        results = []
+        num_batches = (total_prompts + max_concurrent - 1) // max_concurrent
+        
+        for batch_idx in range(num_batches):
+            batch_start = batch_idx * max_concurrent
+            batch_end = min(batch_start + max_concurrent, total_prompts)
+            batch = prompts[batch_start:batch_end]
+            
+            print(f"  [LLM] 执行批次 {batch_idx + 1}/{num_batches}（任务 {batch_start + 1}-{batch_end}）...")
+            
+            # 执行当前批次
+            batch_results = self._execute_batch(batch, batch_start, total_prompts)
+            results.extend(batch_results)
+        
+        return results
+    
+    def _execute_batch(self, batch: List[Dict[str, str]], batch_start: int, total_prompts: int) -> List[Dict[str, Any]]:
+        """执行一批任务（使用 RunnableParallel，保留 trace）"""
         from langchain_core.runnables import RunnableParallel, RunnableLambda
         
         def create_callable(prompt_data: Dict[str, str], index: int, total: int):
@@ -689,47 +713,19 @@ class LLMInvocationAgent(BaseAgent):
             return RunnableLambda(call_fn)
         
         runnables = {}
-        for i, p in enumerate(prompts):
-            key = f"call_{i}"
-            runnables[key] = create_callable(p, i + 1, len(prompts))
+        for j, p in enumerate(batch):
+            key = f"call_{j}"
+            runnables[key] = create_callable(p, batch_start + j + 1, total_prompts)
         
+        # 执行当前批次（使用 RunnableParallel，保留 trace）
         parallel = RunnableParallel(**runnables)
-        results_map = parallel.invoke({})
+        batch_results = parallel.invoke({})
         
+        # 收集结果
         results = []
-        for i in range(len(prompts)):
-            key = f"call_{i}"
-            results.append(results_map[key])
-        
-        return results
-    
-    def _parallel_calls_with_threadpool(self, prompts: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """使用 ThreadPoolExecutor 并发调用（回退方案）"""
-        results = []
-        max_workers = _get_concurrent_calls()
-        
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures: List[Future] = []
-            for i, p in enumerate(prompts):
-                future = executor.submit(
-                    self._call_with_retry,
-                    p['content'],
-                    p['path'],
-                    i + 1,
-                    len(prompts)
-                )
-                futures.append(future)
-            
-            for future in futures:
-                try:
-                    timeout = _get_llm_timeout()
-                    result = future.result(timeout=timeout)
-                    results.append(result)
-                except Exception as e:
-                    results.append({
-                        'success': False,
-                        'error': str(e),
-                    })
+        for j in range(len(batch)):
+            key = f"call_{j}"
+            results.append(batch_results[key])
         
         return results
     
