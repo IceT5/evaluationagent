@@ -895,6 +895,36 @@ class BackgroundTasks:
 - 中期：实现阶段1和阶段2
 - 长期：实现阶段3，完全移除ThreadPoolExecutor
 
+### 6.4 LangchainCallbackHandler 移除说明
+
+**移除时间**：2026-04-06
+
+**移除原因**：
+- langchain-core 1.x 已移除 LangchainCallbackHandler 类
+- 该类在项目中从未实际使用
+- 保留会导致导入失败，影响核心 traceable 功能
+
+**历史背景**：
+- 最初引入是为了解决 BackgroundTasks 的 trace 关联问题
+- 但一直通过 parent_run_id 手动关联，未实际调用
+- get_callback_handler() 函数从未被使用
+
+**影响范围**：
+- ✅ 无影响（从未使用）
+- ✅ 核心功能 traceable 正常工作
+- ✅ BackgroundTasks 通过 parent_run_id 关联 trace
+
+**未来优化方向**：
+- 短期：保持 parent_run_id 方案（当前状态）
+- 中期：实现异步 Agent（arun 方法）
+- 长期：使用 asyncio 替代 ThreadPoolExecutor
+- 参考：6.3 节的三阶段优化路径
+
+**如需重新引入**：
+- 如果 langchain-core 未来版本重新提供类似功能
+- 或使用 langchain-community 包中的替代方案
+- 需在 BackgroundTasks 优化时评估
+
 ---
 
 ## 八、计划功能（未来）

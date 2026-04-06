@@ -6,11 +6,9 @@ from functools import wraps
 LANGSMITH_AVAILABLE = False
 try:
     from langsmith import Client, traceable
-    from langchain_core.callbacks import LangchainCallbackHandler
     LANGSMITH_AVAILABLE = True
 except ImportError:
     traceable = None
-    LangchainCallbackHandler = None
 
 
 class TracingConfig:
@@ -168,24 +166,6 @@ def traceable_llm(name: str):
         run_type="llm",
         tags=["llm"],
     )
-
-
-def get_callback_handler():
-    """获取 LangChain 回调处理器"""
-    if not LANGSMITH_AVAILABLE or LangchainCallbackHandler is None:
-        return None
-    
-    config = get_tracing_config()
-    if not config.is_enabled():
-        return None
-    
-    try:
-        return LangchainCallbackHandler(
-            project_name=config.project,
-            client=config.client,
-        )
-    except Exception:
-        return None
 
 
 def auto_setup():
