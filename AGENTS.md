@@ -232,6 +232,67 @@ results = parallel_execute(tasks, max_concurrent=4)
 - [ ] 通过safe_run()调用
 - [ ] 在LangSmith中能看到完整trace链路
 
+### 常见错误和教训
+
+**错误1：直接调用run()而不是safe_run()**
+
+❌ **错误示例：**
+```python
+# main_graph.py中的节点
+def _create_node(agent):
+    def node(state):
+        return agent.run(state)  # ❌ 直接调用run()
+    return node
+```
+
+✅ **正确示例：**
+```python
+def _create_node(agent):
+    def node(state):
+        return agent.safe_run(state)  # ✅ 通过safe_run()调用
+    return node
+```
+
+**影响：**
+- ❌ 没有trace节点
+- ❌ 没有metadata收集
+- ❌ 没有输入验证
+- ❌ 没有错误处理
+
+**教训：**
+1. **所有Agent调用必须通过safe_run()**
+   - main_graph节点：使用safe_run()
+   - orchestrator内部：使用safe_run()
+   - 任何地方调用Agent：使用safe_run()
+
+2. **修改base_agent.py时必须检查所有调用点**
+   ```bash
+   # 搜索所有agent.run()调用
+   grep -r "\.run(" src/evaluator --include="*.py"
+   
+   # 确认都改为.safe_run()
+   ```
+
+3. **测试必须验证trace**
+   - 不能只测试功能
+   - 必须启用LangSmith验证trace结构
+   - 必须检查所有Agent都有trace节点
+
+4. **修改时的完整流程：**
+   - Step 1: 修改base_agent.py
+   - Step 2: 搜索所有调用点（`grep "\.run("`）
+   - Step 3: 逐个检查并修改为safe_run()
+   - Step 4: 运行测试
+   - Step 5: 启用LangSmith验证trace
+   - Step 6: Git提交
+
+**历史案例：**
+- 问题：Trace增强后，main_graph.py等文件仍使用run()
+- 原因：只修改了base_agent.py，未检查所有调用点
+- 影响：8个Agent没有trace，metadata收集失效
+- 修复：将所有agent.run()改为agent.safe_run()
+- 文件：main_graph.py (4处), cicd_agent.py (1处), intelligence_pipeline.py (3处)
+
 **详细说明见** [ARCHITECTURE.md - Trace设计](./ARCHITECTURE.md)
 
 ## 开发流程

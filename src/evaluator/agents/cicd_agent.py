@@ -102,7 +102,7 @@ class CICDAgent(BaseAgent):
             
             try:
                 orchestrator = self._get_orchestrator()
-                result_state = orchestrator.run(state)
+                result_state = orchestrator.safe_run(state)
                 
                 # 检查是否需要完全重试
                 validation_result = result_state.get("validation_result", {})

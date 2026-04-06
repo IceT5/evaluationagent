@@ -242,7 +242,7 @@ def create_main_graph(
 def _create_orchestrator_node(agent):
     """创建 OrchestratorAgent 节点"""
     def node(state: EvaluatorState) -> EvaluatorState:
-        result = agent.run(state)
+        result = agent.safe_run(state)
         
         completed = state.get("completed_steps", [])
         current = state.get("current_step")
@@ -260,7 +260,7 @@ def _create_validate_node(agent):
     验证状态完整性，添加验证结果到状态。
     """
     def node(state: EvaluatorState) -> EvaluatorState:
-        result = agent.run(state)
+        result = agent.safe_run(state)
         
         validation_result = result.get("validation_result", {})
         if not validation_result.get("valid", True):
@@ -285,7 +285,7 @@ def _create_cicd_node(agent):
             print(f"  [CICD Node] prepare_cicd_retry: retry_mode={retry_updates.get('retry_mode')}, issues={len(retry_updates.get('retry_issues', []))}")
             state = {**state, **retry_updates}
         
-        result = agent.run(state)
+        result = agent.safe_run(state)
         return result
     return node
 
@@ -296,7 +296,7 @@ def _create_reporter_node(agent):
     分析完成后自动触发后台智能Agent任务。
     """
     def node(state: EvaluatorState) -> EvaluatorState:
-        result = agent.run(state)
+        result = agent.safe_run(state)
         
         if not result.get("errors"):
             _trigger_intelligence_background(result)

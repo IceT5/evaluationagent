@@ -92,13 +92,13 @@ class IntelligencePipeline(BaseAgent):
         workflow = StateGraph(Dict[str, Any])  # type: ignore[arg-type, call-arg]
         
         def storage_node(state: Dict[str, Any]) -> Dict[str, Any]:
-            return storage_agent.run(state)
+            return storage_agent.safe_run(state)
         
         def recommendation_node(state: Dict[str, Any]) -> Dict[str, Any]:
-            return recommendation_agent.run(state)
+            return recommendation_agent.safe_run(state)
         
         def reflection_node(state: Dict[str, Any]) -> Dict[str, Any]:
-            return reflection_agent.run(state)
+            return reflection_agent.safe_run(state)
         
         workflow.add_node("storage", storage_node)  # type: ignore[misc]
         workflow.add_node("recommendation", recommendation_node)  # type: ignore[misc]
