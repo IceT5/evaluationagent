@@ -211,6 +211,7 @@ class ReportFixAgent(BaseAgent):
                     report_path.write_text(report, encoding="utf-8")
             
             if arch:
+                arch = self._clean_invalid_connections(arch)
                 arch_path = storage_path / "architecture.json"
                 with open(arch_path, "w", encoding="utf-8") as f:
                     json.dump(arch, f, ensure_ascii=False, indent=2)
@@ -222,3 +223,28 @@ class ReportFixAgent(BaseAgent):
         
         except Exception as e:
             print(f"  [WARN] 保存文件失败: {e}")
+    
+    def _clean_invalid_connections(self, arch: Dict) -> Dict:
+        """清理无效连接（指向不存在节点的连接）"""
+        if not arch:
+            return arch
+        
+        all_node_ids = set()
+        for layer in arch.get("layers", []):
+            for node in layer.get("nodes", []):
+                node_id = node.get("id")
+                if node_id:
+                    all_node_ids.add(node_id)
+        
+        original_connections = arch.get("connections", [])
+        valid_connections = [
+            c for c in original_connections
+            if c.get("source") in all_node_ids and c.get("target") in all_node_ids
+        ]
+        
+        removed_count = len(original_connections) - len(valid_connections)
+        if removed_count > 0:
+            print(f"  清理了 {removed_count} 个无效连接")
+        
+        arch["connections"] = valid_connections
+        return arch

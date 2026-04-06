@@ -332,11 +332,6 @@ class ReviewerAgent(BaseAgent):
             
             wf_section = self._extract_workflow_section(report, wf)
             for trigger in valid_triggers:
-                pattern = rf'`{re.escape(trigger)}`'
-                if re.search(pattern, wf_section):
-                    wf_triggers.add(trigger)
-            
-            for trigger in valid_triggers:
                 pattern = rf'^###\s+{re.escape(trigger)}(\s*\(|\s*$)'
                 if re.search(pattern, wf_section, re.MULTILINE):
                     wf_triggers.add(trigger)

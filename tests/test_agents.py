@@ -78,12 +78,8 @@ class TestCoreImports:
     
     def test_graphs_import(self):
         """测试 Graph 模块导入"""
-        from evaluator.core.graphs import (
-            create_analyze_graph,
-            create_compare_graph,
-        )
-        assert create_analyze_graph is not None
-        assert create_compare_graph is not None
+        from evaluator.core.graphs import create_main_graph
+        assert create_main_graph is not None
     
     def test_routes_import(self):
         """测试路由函数导入"""
@@ -115,11 +111,6 @@ class TestGraphImports:
         """测试 main_graph 导入"""
         from evaluator.core.graphs import create_main_graph
         assert create_main_graph is not None
-    
-    def test_create_analyze_graph_import(self):
-        """测试 analyze_graph 导入"""
-        from evaluator.core.graphs import create_analyze_graph
-        assert create_analyze_graph is not None
 
 
 if __name__ == "__main__":
