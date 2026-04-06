@@ -22,7 +22,7 @@ except ImportError:
     LLMClient = None
 
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from .data_extraction_agent import DataExtractionAgent
 from .analysis_planning_agent import AnalysisPlanningAgent
 from .llm_invocation_agent import LLMInvocationAgent
@@ -99,7 +99,7 @@ class CICDOrchestrator(BaseAgent):
         if not HAS_LANGGRAPH:
             return None
         
-        workflow = StateGraph(CICDState)
+        workflow = StateGraph(EvaluatorState)
         
         workflow.add_node("extract", self._wrap(self.data_extraction))
         workflow.add_node("plan", self._wrap(self.planning))
@@ -152,23 +152,23 @@ class CICDOrchestrator(BaseAgent):
     
     def _wrap(self, agent):
         """包装 Agent 以适配 LangGraph"""
-        def wrapper(state: CICDState) -> CICDState:
+        def wrapper(state: EvaluatorState) -> EvaluatorState:
             return agent.run(state)
         return wrapper
     
-    def _route_after_extract(self, state: CICDState) -> Literal["skip", "continue"]:
+    def _route_after_extract(self, state: EvaluatorState) -> Literal["skip", "continue"]:
         """提取后的路由"""
         if state.get("strategy") == "skip" or state.get("workflow_count", 0) == 0:
             return "skip"
         return "continue"
     
-    def _route_after_plan(self, state: CICDState) -> Literal["skip", "continue"]:
+    def _route_after_plan(self, state: EvaluatorState) -> Literal["skip", "continue"]:
         """规划后的路由"""
         if state.get("strategy") == "skip":
             return "skip"
         return "continue"
     
-    def _route_after_check(self, state: CICDState) -> Literal["retry", "organize", "fail"]:
+    def _route_after_check(self, state: EvaluatorState) -> Literal["retry", "organize", "fail"]:
         """质量检查后的路由"""
         # 新增：检查 validation_result.needs_retry
         validation_result = state.get("validation_result", {})
@@ -193,7 +193,7 @@ class CICDOrchestrator(BaseAgent):
         
         return "organize"
     
-    def _route_after_retry(self, state: CICDState) -> Literal["invoke", "fail"]:
+    def _route_after_retry(self, state: EvaluatorState) -> Literal["invoke", "fail"]:
         """重试处理后的路由"""
         retry_count = state.get("retry_count", 0)
         max_retries = state.get("max_retries", 3)
@@ -202,7 +202,7 @@ class CICDOrchestrator(BaseAgent):
             return "invoke"
         return "fail"
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行 CI/CD 分析"""
         retry_mode = state.get("retry_mode")
         retry_issues = state.get("retry_issues", [])
@@ -220,7 +220,7 @@ class CICDOrchestrator(BaseAgent):
         print(f"  [Orchestrator] 使用顺序执行")
         return self._run_sequential(state)
     
-    def _run_sequential(self, state: CICDState) -> CICDState:
+    def _run_sequential(self, state: EvaluatorState) -> EvaluatorState:
         """顺序执行（无 LangGraph 时）"""
         retry_mode = state.get("retry_mode")
         retry_issues = state.get("retry_issues", [])

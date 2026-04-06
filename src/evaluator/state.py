@@ -86,6 +86,11 @@ class EvaluatorState(TypedDict, total=False):
     prompts: List[str]
     llm_responses: List[str]
     merged_response: Optional[str]
+    # CICD规划字段
+    batch_files: List[str]  # 批处理文件列表
+    prompt_strategy: str  # 提示词策略
+    main_rounds: List[str]  # 主轮次列表
+    main_system_prompt: str  # 主系统提示
     
     # ========== 分析结果 ==========
     cicd_analysis: Optional[Dict]
@@ -94,6 +99,9 @@ class EvaluatorState(TypedDict, total=False):
     report_html: Optional[str]
     architecture_json: Optional[Dict]
     analysis_summary: Optional[Dict]
+    # CICD结果字段
+    key_configs: List[Dict[str, str]]  # 关键配置列表
+    architecture_json_path: Optional[str]  # 架构JSON文件路径
     
     # ========== Review结果 ==========
     review_result: Optional[Dict]
@@ -129,6 +137,7 @@ class EvaluatorState(TypedDict, total=False):
     retry_count: int
     retry_mode: Optional[str]  # retry/supplement
     retry_issues: List[Dict]
+    max_retries: int  # 最大重试次数
     
     # ========== CI/CD 重试控制 (兼容字段) ==========
     cicd_retry_mode: Optional[str]

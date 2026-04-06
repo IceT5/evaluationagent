@@ -28,7 +28,6 @@ from evaluator.agents.error_handler_agent import ErrorHandlerAgent
 from evaluator.agents.state_validation_agent import StateValidationAgent
 
 from evaluator.agents.cicd import (
-    CICDState,
     DataExtractionAgent,
     AnalysisPlanningAgent,
     LLMInvocationAgent,
@@ -74,7 +73,6 @@ __all__ = [
     "ErrorHandlerAgent",
     "StateValidationAgent",
     # CICD 子 Agent
-    "CICDState",
     "DataExtractionAgent",
     "AnalysisPlanningAgent",
     "LLMInvocationAgent",

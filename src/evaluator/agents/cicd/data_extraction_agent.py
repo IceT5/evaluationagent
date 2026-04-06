@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, Dict, Any
 
 from evaluator.skills import CIAnalyzer
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -30,7 +30,7 @@ class DataExtractionAgent(BaseAgent):
         super().__init__()
         self.ci_analyzer = CIAnalyzer()
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行数据提取"""
         project_path = state.get("project_path")
         storage_dir = state.get("storage_dir")

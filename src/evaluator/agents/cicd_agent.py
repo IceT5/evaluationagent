@@ -75,8 +75,6 @@ class CICDAgent(BaseAgent):
     
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
         """执行 CI/CD 分析"""
-        from evaluator.agents.cicd.state import to_cicd_state, from_cicd_state
-        
         project_path = state.get("project_path")
         storage_dir = state.get("storage_dir")
         
@@ -92,8 +90,8 @@ class CICDAgent(BaseAgent):
         print("  CI/CD 架构分析 (Agent 架构)")
         print(f"{'='*50}")
         
-        cicd_state = to_cicd_state(state)
-        cicd_state["architecture_json_path"] = f"{storage_dir}/architecture.json" if storage_dir else None
+        # 设置architecture_json_path
+        state["architecture_json_path"] = f"{storage_dir}/architecture.json" if storage_dir else None
         
         max_retries = 3
         result_state = None
@@ -104,7 +102,7 @@ class CICDAgent(BaseAgent):
             
             try:
                 orchestrator = self._get_orchestrator()
-                result_state = orchestrator.run(cicd_state)
+                result_state = orchestrator.run(state)
                 
                 # 检查是否需要完全重试
                 validation_result = result_state.get("validation_result", {})
@@ -168,7 +166,7 @@ class CICDAgent(BaseAgent):
         print("  CI/CD 分析完成!")
         print(f"{'='*50}")
         
-        return from_cicd_state(state, result_state) | {
+        return result_state | {
             "current_step": "cicd",
             "cicd_analysis": {
                 "status": "success",
