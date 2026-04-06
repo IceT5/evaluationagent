@@ -46,6 +46,7 @@ class ExtractCIDataTool:
             self._func = analyzer.extract_data
         return self._func
     
+    @traceable_tool("extract_ci_data")
     def invoke(self, project_path: str) -> Dict[str, Any]:
         """同步调用"""
         return self.func(project_path)
@@ -85,6 +86,7 @@ class CloneRepositoryTool:
             self._func = GitOperations.clone
         return self._func
     
+    @traceable_tool("clone_repository")
     def invoke(self, url: str, target_dir: Optional[str] = None, branch: Optional[str] = None) -> Dict[str, Any]:
         """同步调用"""
         if target_dir:
@@ -125,6 +127,7 @@ class ParseURLTool:
             self._func = UrlParser.parse
         return self._func
     
+    @traceable_tool("parse_url")
     def invoke(self, url: str) -> Dict[str, Any]:
         """同步调用"""
         return self.func(url)
@@ -160,6 +163,7 @@ class GeneratePromptTool:
             self._func = analyzer.generate_prompt
         return self._func
     
+    @traceable_tool("generate_ci_prompt")
     def invoke(self, ci_data: Dict[str, Any], output_file: Optional[str] = None) -> str:
         """同步调用"""
         return self.func(ci_data, output_file)
@@ -180,6 +184,7 @@ class ListProjectsTool:
         项目信息列表
     """
     
+    @traceable_tool("list_projects")
     def invoke(self) -> List[Dict[str, Any]]:
         """同步调用"""
         from evaluator.core import list_projects
@@ -212,6 +217,7 @@ class GetProjectTool:
         项目详情
     """
     
+    @traceable_tool("get_project")
     def invoke(self, name: str) -> Optional[Dict[str, Any]]:
         """同步调用"""
         from evaluator.core import get_project

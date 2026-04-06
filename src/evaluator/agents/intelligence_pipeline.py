@@ -128,19 +128,24 @@ class IntelligencePipeline(BaseAgent):
         else:
             return self._run_sequential(state)
     
+    # TODO: 待讨论是否移除此方法（同orchestrator._run_sequential）
     def _run_sequential(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """顺序执行（无 LangGraph 时回退）"""
+        """顺序执行（无 LangGraph 时回退）
+        
+        TODO: 待讨论是否移除此方法
+        - 如果项目强制使用LangGraph，此方法可能不需要
+        """
         from evaluator.agents import StorageAgent, RecommendationAgent, ReflectionAgent
         
         current_state = state.copy()
         
         storage_agent = StorageAgent()
-        current_state = storage_agent.run(current_state)
+        current_state = storage_agent.safe_run(current_state)
         
         recommendation_agent = RecommendationAgent(llm=self.llm)
-        current_state = recommendation_agent.run(current_state)
+        current_state = recommendation_agent.safe_run(current_state)
         
         reflection_agent = ReflectionAgent(llm=self.llm)
-        current_state = reflection_agent.run(current_state)
+        current_state = reflection_agent.safe_run(current_state)
         
         return current_state

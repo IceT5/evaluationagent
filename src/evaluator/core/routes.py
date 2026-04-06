@@ -5,7 +5,7 @@ from langsmith import traceable
 from evaluator.state import EvaluatorState
 
 
-@traceable()
+@traceable(name="route_by_orchestrator", run_type="chain", tags=['router', 'orchestrator'])
 def route_by_orchestrator(state: EvaluatorState) -> Literal["input", "loader", "cicd", "reviewer", "reporter", "end"]:
     """基于 OrchestratorAgent 决策的路由
     
@@ -22,7 +22,7 @@ def route_by_orchestrator(state: EvaluatorState) -> Literal["input", "loader", "
     return next_step
 
 
-@traceable()
+@traceable(name="route_after_input", run_type="chain", tags=['router', 'input'])
 def route_after_input(state: EvaluatorState) -> Literal["loader", "error_handler", "skip", "orchestrator"]:
     """输入后的路由
     
@@ -39,7 +39,7 @@ def route_after_input(state: EvaluatorState) -> Literal["loader", "error_handler
     return "skip"
 
 
-@traceable()
+@traceable(name="route_after_loader", run_type="chain", tags=['router', 'loader'])
 def route_after_loader(state: EvaluatorState) -> Literal["cicd", "error_handler", "skip", "orchestrator"]:
     """加载后的路由
     
@@ -59,7 +59,7 @@ def route_after_loader(state: EvaluatorState) -> Literal["cicd", "error_handler"
     return "orchestrator"
 
 
-@traceable()
+@traceable(name="route_after_cicd", run_type="chain", tags=['router', 'cicd'])
 def route_after_cicd(state: EvaluatorState) -> Literal["reviewer", "error_handler", "skip", "cicd", "orchestrator"]:
     """CI/CD 分析后的路由
     
@@ -88,7 +88,7 @@ def route_after_cicd(state: EvaluatorState) -> Literal["reviewer", "error_handle
     return "orchestrator"
 
 
-@traceable()
+@traceable(name="route_after_review", run_type="chain", tags=['router', 'review'])
 def route_after_review(state: EvaluatorState) -> Literal["reporter", "cicd", "error_handler", "orchestrator"]:
     """验证后的路由
     
@@ -116,7 +116,7 @@ def route_after_review(state: EvaluatorState) -> Literal["reporter", "cicd", "er
     return "orchestrator"
 
 
-@traceable()
+@traceable(name="route_after_reporter", run_type="chain", tags=['router', 'reporter'])
 def route_after_reporter(state: EvaluatorState) -> Literal["success", "error_handler"]:
     """报告生成后的路由
     
@@ -260,7 +260,7 @@ INTENT_WORKFLOWS = {
 }
 
 
-@traceable()
+@traceable(name="route_intent", run_type="chain", tags=['router', 'intent'])
 def route_intent(state: EvaluatorState) -> Literal[
     "input", "loader", "cicd", "reviewer", "reporter",
     "compare", "list_handler", "info_handler", "delete_handler",
@@ -298,7 +298,7 @@ def route_intent(state: EvaluatorState) -> Literal[
     return "end"
 
 
-@traceable()
+@traceable(name="route_error", run_type="chain", tags=['router', 'error'])
 def route_error(state: EvaluatorState) -> Literal["retry", "recover", "end"]:
     """错误处理后的路由
     
@@ -351,7 +351,7 @@ def _is_fatal_error(error: str) -> bool:
     return any(pattern in error_lower for pattern in fatal_patterns)
 
 
-@traceable()
+@traceable(name="route_after_validate", run_type="chain", tags=['router', 'validate'])
 def route_after_validate(state: EvaluatorState) -> Literal["input", "orchestrator", "end"]:
     """验证后的路由
     
@@ -377,7 +377,7 @@ def route_after_validate(state: EvaluatorState) -> Literal["input", "orchestrato
     return "orchestrator"
 
 
-@traceable()
+@traceable(name="route_after_reviewer", run_type="chain", tags=['router', 'reviewer'])
 def route_after_reviewer(state: EvaluatorState) -> Literal["report_fix", "reporter", "orchestrator"]:
     """ReviewerAgent 后的路由
     
@@ -398,7 +398,7 @@ def route_after_reviewer(state: EvaluatorState) -> Literal["report_fix", "report
     return "orchestrator"
 
 
-@traceable()
+@traceable(name="route_after_report_fix", run_type="chain", tags=['router', 'fix'])
 def route_after_report_fix(state: EvaluatorState) -> Literal["reviewer", "reporter", "cicd", "orchestrator"]:
     """ReportFixAgent 后的路由
     

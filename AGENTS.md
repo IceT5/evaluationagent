@@ -189,6 +189,51 @@ CLI → Core (LangGraph) → Agents → Skills/Storage
 ### 验证（2个）
 - ErrorHandlerAgent, StateValidationAgent
 
+## LangSmith Trace统一要求
+
+**所有Agent必须支持trace**，确保执行过程可追踪、可调试。
+
+### 基本原则
+
+- ✅ 所有Agent通过`safe_run()`统一trace入口
+- ✅ `run()`方法不添加`@traceable()`装饰器（避免双重trace）
+- ✅ 使用扩展版metadata（19个字段）提供完整上下文
+- ❌ 禁止在`run()`方法添加`@traceable()`
+- ❌ 禁止直接调用`run()`而不通过`safe_run()`
+- ❌ 禁止使用ThreadPoolExecutor（无法关联trace）
+
+### Metadata标准
+
+**扩展版Metadata（所有Agent自动包含）：**
+- 基础信息：agent_name, agent_category, project信息
+- 执行上下文：intent, current_step, completed_steps_count
+- CI/CD信息：workflow_count, actions_count, strategy
+- 重试信息：retry_mode, retry_count, retry_issues_count
+- 错误和警告：has_errors, error_count, has_warnings, warning_count
+- 存储信息：storage_dir, has_storage_version
+
+**详细版Metadata（调试模式）：**
+设置`EVAL_TRACE_DEBUG=true`时，额外包含：inputs, outputs, dependencies, state_keys
+
+### 并发执行
+
+**必须使用统一并发工具：**
+```python
+from evaluator.utils import parallel_execute
+tasks = [lambda: task1(), lambda: task2()]
+results = parallel_execute(tasks, max_concurrent=4)
+```
+
+### 验证清单
+
+开发新Agent时，确认：
+- [ ] Agent继承BaseAgent
+- [ ] run()方法没有@traceable()装饰器
+- [ ] 通过safe_run()调用
+- [ ] 在LangSmith中能看到完整trace链路
+
+**详细说明见** [ARCHITECTURE.md - Trace设计](./ARCHITECTURE.md)
+
 ## 开发流程
 
 ### 添加新Agent

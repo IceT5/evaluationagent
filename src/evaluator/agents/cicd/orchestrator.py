@@ -151,9 +151,16 @@ class CICDOrchestrator(BaseAgent):
         return workflow.compile()
     
     def _wrap(self, agent):
-        """包装 Agent 以适配 LangGraph"""
+        """包装 Agent 以适配 LangGraph
+        
+        使用 safe_run() 确保：
+        - 完整的trace支持
+        - 输入验证
+        - 错误处理
+        - 中断支持
+        """
         def wrapper(state: EvaluatorState) -> EvaluatorState:
-            return agent.run(state)
+            return agent.safe_run(state)
         return wrapper
     
     def _route_after_extract(self, state: EvaluatorState) -> Literal["skip", "continue"]:
@@ -220,37 +227,50 @@ class CICDOrchestrator(BaseAgent):
         print(f"  [Orchestrator] 使用顺序执行")
         return self._run_sequential(state)
     
+    # TODO: 待讨论是否移除此方法
+    # 当前用途：
+    # 1. retry/supplement模式使用顺序执行
+    # 2. LangGraph不可用时的fallback
+    # 问题：
+    # - 项目要求必须使用LangGraph编排
+    # - retry模式是否也应该使用LangGraph？
+    # 建议：评估后决定是否移除
     def _run_sequential(self, state: EvaluatorState) -> EvaluatorState:
-        """顺序执行（无 LangGraph 时）"""
+        """顺序执行（无 LangGraph 时）
+        
+        TODO: 待讨论是否移除此方法
+        - 如果项目强制使用LangGraph，此方法可能不需要
+        - 但retry模式当前使用顺序执行，需要评估
+        """
         retry_mode = state.get("retry_mode")
         retry_issues = state.get("retry_issues", [])
         
         if retry_mode == "supplement" and retry_issues:
             print("  [Retry] 补充模式：跳过数据提取和规划，直接补充缺失内容")
-            state = self.retry_handling.run(state)
-            state = self.merging.run(state)
-            state = self.quality_check.run(state)
+            state = self.retry_handling.safe_run(state)
+            state = self.merging.safe_run(state)
+            state = self.quality_check.safe_run(state)
             
             if not state.get("errors"):
-                state = self.stage_organization.run(state)
-                state = self.report_generation.run(state)
-                state = self.summary_generation.run(state)
+                state = self.stage_organization.safe_run(state)
+                state = self.report_generation.safe_run(state)
+                state = self.summary_generation.safe_run(state)
             
             return state
         
-        state = self.data_extraction.run(state)
+        state = self.data_extraction.safe_run(state)
         
         if state.get("strategy") == "skip":
             return state
         
-        state = self.planning.run(state)
+        state = self.planning.safe_run(state)
         
         if state.get("strategy") == "skip":
             return state
         
-        state = self.invocation.run(state)
-        state = self.merging.run(state)
-        state = self.quality_check.run(state)
+        state = self.invocation.safe_run(state)
+        state = self.merging.safe_run(state)
+        state = self.quality_check.safe_run(state)
         
         # 新增：检查 validation_result.needs_retry
         validation_result = state.get("validation_result", {})
@@ -262,12 +282,12 @@ class CICDOrchestrator(BaseAgent):
             return state
         
         if retry_mode == "retry" and retry_issues:
-            state = self.retry_handling.run(state)
-            state = self.invocation.run(state)
+            state = self.retry_handling.safe_run(state)
+            state = self.invocation.safe_run(state)
         
         if not state.get("errors"):
-            state = self.stage_organization.run(state)
-            state = self.report_generation.run(state)
-            state = self.summary_generation.run(state)
+            state = self.stage_organization.safe_run(state)
+            state = self.report_generation.safe_run(state)
+            state = self.summary_generation.safe_run(state)
         
         return state

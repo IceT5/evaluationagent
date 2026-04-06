@@ -8,6 +8,8 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langchain_core.callbacks import BaseCallbackHandler
 import httpx
 
+from evaluator.llm.tracing import traceable_llm
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "glm-4")
@@ -132,6 +134,7 @@ class LLMClient:
         except Exception:
             pass
     
+    @traceable_llm("chat")
     def chat(
         self,
         prompt: str,
@@ -212,6 +215,7 @@ class LLMClient:
         
         return self.chat(full_prompt, system_prompt)
     
+    @traceable_llm("chat_multi_round")
     def chat_multi_round(
         self,
         rounds: List[str],

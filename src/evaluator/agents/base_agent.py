@@ -91,9 +91,10 @@ class BaseAgent(ABC):
         pass
     
     @abstractmethod
-    @traceable()
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """执行Agent逻辑
+        """执行Agent逻辑 - 内部方法，不独立trace
+        
+        通过 safe_run() 调用以获得完整的trace支持。
         
         Args:
             state: 当前状态 (EvaluatorState的子集)
@@ -146,13 +147,101 @@ class BaseAgent(ABC):
         missing = [f for f in meta.outputs if f not in state]
         return len(missing) == 0, missing
     
-    @traceable()
     def safe_run(self, state: Dict[str, Any]) -> Dict[str, Any]:
-        """安全执行 - 带中断检查、输入验证和异常捕获
+        """安全执行 - 统一trace入口
         
-        如果输入验证失败，返回带有错误信息的state。
-        如果执行过程中发生异常，捕获并记录错误。
-        支持通过 InterruptController 中断执行。
+        提供：
+        - LangSmith trace支持（带扩展版metadata）
+        - 输入验证
+        - 错误处理
+        - 中断支持
+        """
+        import os
+        from evaluator.llm.tracing import traceable
+        from functools import wraps
+        
+        # 收集扩展版metadata
+        metadata = self._collect_metadata(state)
+        
+        # 创建带trace的执行函数
+        @traceable(
+            name=self.describe().name,
+            run_type="chain",
+            tags=["agent", self.describe().category],
+            metadata=metadata,
+        )
+        @wraps(self._safe_run_impl)
+        def _run_with_trace(inner_state):
+            return self._safe_run_impl(inner_state)
+        
+        return _run_with_trace(state)
+    
+    def _collect_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """收集metadata - 扩展版（19个字段）
+        
+        包含：
+        - 基础信息：agent_name, category, project信息
+        - 执行上下文：intent, current_step, completed_steps
+        - CI/CD信息：workflow_count, actions_count, strategy
+        - 重试信息：retry_mode, retry_count, retry_issues
+        - 错误和警告：errors, warnings
+        - 存储信息：storage_dir, storage_version
+        """
+        import os
+        
+        metadata = {
+            # === 基础信息 ===
+            "agent_name": self.describe().name,
+            "agent_category": self.describe().category,
+            "project_path": state.get("project_path"),
+            "project_name": state.get("project_name"),
+            "project_url": state.get("project_url"),
+            "display_name": state.get("display_name"),
+            
+            # === 执行上下文 ===
+            "intent": state.get("intent"),
+            "current_step": state.get("current_step"),
+            "completed_steps_count": len(state.get("completed_steps", [])),
+            
+            # === CI/CD信息 ===
+            "workflow_count": state.get("workflow_count", 0),
+            "actions_count": state.get("actions_count", 0),
+            "strategy": state.get("strategy"),
+            
+            # === 重试信息 ===
+            "retry_mode": state.get("retry_mode"),
+            "retry_count": state.get("retry_count", 0),
+            "retry_issues_count": len(state.get("retry_issues", [])),
+            
+            # === 错误和警告 ===
+            "has_errors": bool(state.get("errors")),
+            "error_count": len(state.get("errors", [])),
+            "has_warnings": bool(state.get("warnings")),
+            "warning_count": len(state.get("warnings", [])),
+            
+            # === 存储信息 ===
+            "storage_dir": state.get("storage_dir"),
+            "has_storage_version": bool(state.get("storage_version_id")),
+        }
+        
+        # 调试模式 - 详细metadata
+        if os.getenv("EVAL_TRACE_DEBUG") == "true":
+            metadata.update({
+                "inputs": self.describe().inputs,
+                "outputs": self.describe().outputs,
+                "dependencies": self.describe().dependencies,
+                "state_keys": list(state.keys()),
+            })
+        
+        return metadata
+    
+    def _safe_run_impl(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """safe_run的实际实现（无装饰器）
+        
+        提供：
+        - 中断检查
+        - 输入验证
+        - 错误处理
         """
         interrupt_controller, InterruptException = _get_interrupt_controller()
         
