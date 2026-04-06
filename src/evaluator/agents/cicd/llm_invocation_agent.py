@@ -2,7 +2,6 @@
 import time
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
-from concurrent.futures import ThreadPoolExecutor, Future
 
 try:
     from evaluator.llm import LLMClient
@@ -18,6 +17,7 @@ except ImportError:
     HAS_CONFIG = False
     config = None
 
+from evaluator.utils import parallel_execute
 from .state import CICDState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
@@ -641,9 +641,9 @@ class LLMInvocationAgent(BaseAgent):
             }
     
     def _parallel_calls(self, prompt_files: List[str]) -> List[Dict[str, Any]]:
-        """并发 LLM 调用
+        """并发 LLM 调用（使用统一并发工具）
         
-        使用 RunnableParallel 实现并发，自动关联 trace。
+        自动关联LangSmith trace，保留重试机制。
         """
         prompts = []
         for pf in prompt_files:
@@ -662,70 +662,22 @@ class LLMInvocationAgent(BaseAgent):
         
         print(f"  [LLM] 并发调用 {len(prompts)} 个 prompt...")
         
-        # LangChain 是必需依赖，直接使用 RunnableParallel
-        return self._parallel_calls_with_runnable(prompts)
-    
-    def _parallel_calls_with_runnable(self, prompts: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """使用 RunnableParallel 并发调用（自动关联 trace）
-        
-        分批执行以限制并发数，同时保留 LangSmith trace 支持。
-        """
-        from langchain_core.runnables import RunnableParallel, RunnableLambda
-        
-        max_concurrent = _get_concurrent_calls()  # 获取并发数限制
-        total_prompts = len(prompts)
-        
-        if max_concurrent >= total_prompts:
-            # 如果并发数 >= 任务数，直接并发所有任务
-            return self._execute_batch(prompts, 0, total_prompts)
-        
-        # 分批执行
-        print(f"  [LLM] 分批执行：每批最多 {max_concurrent} 个任务")
-        
-        results = []
-        num_batches = (total_prompts + max_concurrent - 1) // max_concurrent
-        
-        for batch_idx in range(num_batches):
-            batch_start = batch_idx * max_concurrent
-            batch_end = min(batch_start + max_concurrent, total_prompts)
-            batch = prompts[batch_start:batch_end]
-            
-            print(f"  [LLM] 执行批次 {batch_idx + 1}/{num_batches}（任务 {batch_start + 1}-{batch_end}）...")
-            
-            # 执行当前批次
-            batch_results = self._execute_batch(batch, batch_start, total_prompts)
-            results.extend(batch_results)
-        
-        return results
-    
-    def _execute_batch(self, batch: List[Dict[str, str]], batch_start: int, total_prompts: int) -> List[Dict[str, Any]]:
-        """执行一批任务（使用 RunnableParallel，保留 trace）"""
-        from langchain_core.runnables import RunnableParallel, RunnableLambda
-        
-        def create_callable(prompt_data: Dict[str, str], index: int, total: int):
-            def call_fn(_: Any = None) -> Dict[str, Any]:
+        # 创建任务列表（保留重试逻辑）
+        def create_task(prompt_data: Dict[str, str], index: int, total: int):
+            def task():
                 return self._call_with_retry(
                     prompt_data['content'],
                     prompt_data['path'],
                     index,
                     total
                 )
-            return RunnableLambda(call_fn)
+            return task
         
-        runnables = {}
-        for j, p in enumerate(batch):
-            key = f"call_{j}"
-            runnables[key] = create_callable(p, batch_start + j + 1, total_prompts)
+        tasks = [create_task(p, i+1, len(prompts)) for i, p in enumerate(prompts)]
         
-        # 执行当前批次（使用 RunnableParallel，保留 trace）
-        parallel = RunnableParallel(**runnables)
-        batch_results = parallel.invoke({})
-        
-        # 收集结果
-        results = []
-        for j in range(len(batch)):
-            key = f"call_{j}"
-            results.append(batch_results[key])
+        # 使用统一并发工具执行
+        max_concurrent = _get_concurrent_calls()
+        results = parallel_execute(tasks, max_concurrent=max_concurrent)
         
         return results
     

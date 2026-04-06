@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, List, Set, Any
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from evaluator.utils import parallel_execute
 from evaluator.llm import LLMClient
 from .base_agent import BaseAgent, AgentMeta
 
@@ -400,36 +400,40 @@ class ReviewerAgent(BaseAgent):
                 claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs)
             return claimed_jobs
         
-        # 并发 LLM 提取
+        # 并发 LLM 提取（使用统一并发工具）
         max_workers = _get_llm_workers()
         print(f"  使用 LLM 提取 Job（并发数: {max_workers}）...")
         
-        def extract_single(wf_name: str) -> tuple:
-            section = workflow_sections.get(wf_name, "")
-            known_jobs = ground_truth.jobs.get(wf_name, set())
-            jobs = self._extract_jobs_with_llm(section, wf_name, known_jobs)
-            return (wf_name, jobs)
+        # 创建任务列表（保留重试和降级逻辑）
+        def create_extract_task(wf_name: str):
+            def task():
+                try:
+                    section = workflow_sections.get(wf_name, "")
+                    known_jobs = ground_truth.jobs.get(wf_name, set())
+                    # 调用_extract_jobs_with_llm（内部有重试机制）
+                    jobs = self._extract_jobs_with_llm(section, wf_name, known_jobs)
+                    return (wf_name, jobs, None)
+                except Exception as e:
+                    # 重试全部失败后，降级到代码提取
+                    section = workflow_sections.get(wf_name, "")
+                    known_jobs = ground_truth.jobs.get(wf_name, set())
+                    jobs = self._extract_jobs_by_code(section, known_jobs)
+                    return (wf_name, jobs, str(e))
+            return task
+        
+        tasks = [create_extract_task(wf) for wf in workflow_sections.keys()]
         
         try:
-            with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = {
-                    executor.submit(extract_single, wf): wf 
-                    for wf in workflow_sections.keys()
-                }
-                
-                for future in as_completed(futures):
-                    wf = futures[future]
-                    try:
-                        timeout = _get_llm_timeout()
-                        wf_name, jobs = future.result(timeout=timeout)
-                        claimed_jobs[wf_name] = jobs
-                        print(f"    ✓ {wf_name}: {len(jobs)} jobs")
-                    except Exception as e:
-                        print(f"    ✗ {wf}: {e}")
-                        # 降级：使用代码提取
-                        section = workflow_sections.get(wf, "")
-                        known_jobs = ground_truth.jobs.get(wf, set())
-                        claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs)
+            # 使用统一并发工具执行（自动关联LangSmith trace）
+            results = parallel_execute(tasks, max_concurrent=max_workers)
+            
+            # 处理结果
+            for wf_name, jobs, error in results:
+                claimed_jobs[wf_name] = jobs
+                if error:
+                    print(f"    ✗ {wf_name}: {error}（已降级）")
+                else:
+                    print(f"    ✓ {wf_name}: {len(jobs)} jobs")
         except Exception as e:
             print(f"  ⚠️ 并发提取失败: {e}，使用代码提取")
             for wf, section in workflow_sections.items():

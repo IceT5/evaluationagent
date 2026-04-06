@@ -20,22 +20,30 @@
 
 **必须支持trace**：
 - 使用 `@traceable()` 装饰器标记Agent
-- 使用 `RunnableParallel` 实现并发（自动关联trace）
-- 使用分批执行 + RunnableParallel 限制并发数
+- **使用统一并发工具** `evaluator.utils.parallel_execute` 实现并发
+- 自动关联LangSmith trace，无需手动处理
 
 **禁止**：
 - ❌ 使用 ThreadPoolExecutor（无法关联trace）
+- ❌ 直接使用 RunnableParallel（应使用统一工具）
 - ❌ 无法追踪的并发方式
 
-**示例**：
+**统一并发工具**：
 ```python
-# 正确：分批执行 + RunnableParallel
-max_concurrent = config.max_concurrent_llm_calls
-for batch_start in range(0, len(tasks), max_concurrent):
-    batch = tasks[batch_start:batch_start + max_concurrent]
-    parallel = RunnableParallel(**create_runnables(batch))
-    results.extend(parallel.invoke({}))
+from evaluator.utils import parallel_execute
+
+# 创建任务列表
+tasks = [lambda: task1(), lambda: task2(), lambda: task3()]
+
+# 并发执行（自动关联trace）
+results = parallel_execute(tasks, max_concurrent=4)
 ```
+
+**工具优势**：
+- ✅ 自动使用RunnableParallel关联trace
+- ✅ 自动分批执行限制并发数
+- ✅ 统一维护，避免重复实现
+- ✅ 简化代码，提高可读性
 
 ### 3. 统一编排原则
 

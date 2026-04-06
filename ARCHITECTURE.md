@@ -31,8 +31,36 @@
 | ❌ 使用全局状态 | 导致状态难以追踪和调试 |
 | ❌ 创建新的图定义文件 | 只允许 `core/graphs/` 下的图定义 |
 | ❌ Agent不继承BaseAgent | 破坏架构一致性 |
+| ❌ 使用ThreadPoolExecutor | 无法关联LangSmith trace，必须使用统一并发工具 |
 
-### 1.3 Agent分类
+### 1.3 统一并发工具
+
+**所有并发执行必须使用统一工具类**：
+
+```python
+from evaluator.utils import parallel_execute
+
+# 创建任务列表
+tasks = [lambda: task1(), lambda: task2(), lambda: task3()]
+
+# 并发执行（自动关联LangSmith trace）
+results = parallel_execute(tasks, max_concurrent=4)
+```
+
+**工具位置**：`src/evaluator/utils/concurrency.py`
+
+**核心优势**：
+- ✅ 自动使用RunnableParallel关联trace
+- ✅ 自动分批执行限制并发数
+- ✅ 统一维护，避免重复实现
+- ✅ 简化代码，提高可读性
+
+**禁止事项**：
+- ❌ 直接使用ThreadPoolExecutor
+- ❌ 直接使用RunnableParallel（应通过工具类）
+- ❌ 重复实现并发逻辑
+
+### 1.4 Agent分类
 
 | 类别 | 说明 | 示例 |
 |------|------|------|
@@ -649,6 +677,80 @@ class BackgroundTasks:
   "generated_at": "2026-03-21T10:00:00Z"
 }
 ```
+
+### 6.3 后续优化方向
+
+**当前限制**：
+- BackgroundTasks使用ThreadPoolExecutor，无法完美关联LangSmith trace
+- IntelligencePipeline内部是同步执行，无法利用异步优势
+- 虽然通过parent_run_id手动关联trace，但不够优雅
+
+**优化路径**：
+
+#### 阶段1：异步Agent支持
+为所有Agent添加异步方法：
+
+```python
+class BaseAgent(ABC):
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """同步执行"""
+        pass
+    
+    async def arun(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        """异步执行"""
+        # 默认实现：在事件循环中运行同步方法
+        return await asyncio.get_event_loop().run_in_executor(
+            None, 
+            lambda: self.run(state)
+        )
+```
+
+#### 阶段2：IntelligencePipeline并发优化
+使用混合模式并发执行：
+
+```python
+from evaluator.utils import parallel_execute_dict
+
+# Storage独立执行
+storage_result = StorageAgent().run(state)
+
+# Recommendation + Reflection并发执行
+tasks = {
+    "recommendation": lambda: RecommendationAgent().run(state),
+    "reflection": lambda: ReflectionAgent().run(state),
+}
+results = parallel_execute_dict(tasks, max_concurrent=2)
+```
+
+#### 阶段3：BackgroundTasks异步改造
+使用asyncio事件循环替代ThreadPoolExecutor：
+
+```python
+import asyncio
+
+class BackgroundTasks:
+    def __init__(self):
+        self._loop = asyncio.new_event_loop()
+    
+    def submit_intelligence(self, state: Dict[str, Any]):
+        async def run_pipeline():
+            pipeline = IntelligencePipeline()
+            return await pipeline.arun(state)
+        
+        task = asyncio.create_task(run_pipeline())
+        return task
+```
+
+**预期收益**：
+- ✅ 完美关联LangSmith trace
+- ✅ 提升性能（并发执行）
+- ✅ 统一异步架构
+- ✅ 更优雅的实现
+
+**实施时机**：
+- 短期：保持现状，通过parent_run_id关联trace
+- 中期：实现阶段1和阶段2
+- 长期：实现阶段3，完全移除ThreadPoolExecutor
 
 ---
 
