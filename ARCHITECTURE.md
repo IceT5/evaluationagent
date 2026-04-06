@@ -781,6 +781,66 @@ workflow.compile(checkpointer=checkpointer)
 - 本地开发使用 `MemorySaver`，生产环境可使用数据库存储
 - 与 LangSmith Tracing 互补：checkpointer 负责状态持久化，LangSmith 负责可观测性
 
+### 7.2 动态工具选择（未来功能）
+
+**当前状态**：未启用（保留实现）
+
+**相关Agent**：ToolSelectionAgent
+
+**设计意图**：
+- 动态选择和组合工具
+- LLM驱动的工具选择
+- 灵活的工作流编排
+
+**当前未启用原因**：
+
+| 原因 | 说明 |
+|-----|------|
+| **稳定性** | 核心功能编排需要可预测的行为 |
+| **确定性** | 避免动态选择带来的不确定性 |
+| **性能** | 减少LLM调用开销 |
+| **简洁性** | 静态模板已满足当前需求 |
+
+**当前实现**：
+- OrchestratorAgent使用静态WORKFLOW_TEMPLATES
+- 工作流根据intent硬编码
+- 无动态工具选择逻辑
+
+**未来启用场景**：
+
+1. **自定义分析流程**
+   - 用户定义分析步骤
+   - 灵活组合分析工具
+   - 个性化工作流
+
+2. **插件系统**
+   - 第三方插件集成
+   - 动态加载工具
+   - 扩展分析能力
+
+3. **用户定义工作流**
+   - 配置文件定义工作流
+   - 可视化工作流编辑器
+   - 工作流模板市场
+
+**启用路径**：
+
+```python
+# 配置开关
+config.use_dynamic_tool_selection = False  # 默认关闭
+
+# OrchestratorAgent决策逻辑
+if config.use_dynamic_tool_selection:
+    tools = self.select_tools(task, context)  # 动态选择
+else:
+    workflow = self.WORKFLOW_TEMPLATES.get(intent)  # 静态模板
+```
+
+**实施时机**：
+- 短期：保持静态模式
+- 中期：实现配置开关
+- 长期：在附加功能中启用
+
 ---
 
 ## 九、CLI命令

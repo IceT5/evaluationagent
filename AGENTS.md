@@ -166,8 +166,13 @@ CLI → Core (LangGraph) → Agents → Skills/Storage
 - OrchestratorAgent, IntelligencePipeline, CICDOrchestrator
 
 ### 智能（4个）
-- ToolSelectionAgent, StorageAgent
-- ReflectionAgent, RecommendationAgent
+- ToolSelectionAgent（未启用，保留用于未来扩展）
+- StorageAgent, ReflectionAgent, RecommendationAgent
+
+**ToolSelectionAgent说明**：
+- 状态：未启用
+- 原因：核心功能编排使用静态模板，避免动态选择的不确定性
+- 未来：用于附加功能（自定义流程、插件系统）
 
 ### CICD子Agent（9个）
 - DataExtractionAgent, AnalysisPlanningAgent, LLMInvocationAgent

@@ -24,9 +24,11 @@ class TestAgentImports:
         """测试编排 Agent 导入"""
         from evaluator.agents import (
             OrchestratorAgent,
+            # ToolSelectionAgent（未启用功能，保留用于未来扩展）
             ToolSelectionAgent,
         )
         assert OrchestratorAgent is not None
+        # ToolSelectionAgent（未启用，保留测试确保代码可用性）
         assert ToolSelectionAgent is not None
     
     def test_intelligent_agents_import(self):

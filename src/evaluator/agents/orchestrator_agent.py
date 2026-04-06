@@ -25,12 +25,24 @@ class OrchestratorAgent(BaseAgent):
     职责：
     1. 根据意图和状态规划执行步骤
     2. 决定是否需要重试
-    3. 动态选择 Agent 执行
+    3. 选择下一个Agent执行
     4. 返回决策结果供 LangGraph 路由使用
     
     架构原则:
-    - 工具选择委托给ToolSelectionAgent
+    - 使用静态工作流模板（WORKFLOW_TEMPLATES）确保稳定性
     - 使用LangGraph进行状态驱动编排
+    - 工具选择逻辑保留在ToolSelectionAgent（未启用）
+    
+    设计决策说明:
+    - 当前使用静态模板而非动态工具选择的原因：
+      1. 核心功能编排需要稳定性和可预测性
+      2. 避免动态选择带来的不确定性
+      3. 减少LLM调用开销，提升性能
+      4. 当前需求明确，静态模板已足够
+    - ToolSelectionAgent保留用于未来扩展：
+      - 自定义分析流程
+      - 插件系统
+      - 用户定义工作流
     """
     
     AGENTS = {
@@ -253,9 +265,17 @@ class OrchestratorAgent(BaseAgent):
         task: str,
         context: Dict[str, Any]
     ) -> List[str]:
-        """选择合适的工具
+        """选择合适的工具（未启用）
         
-        委托给ToolSelectionAgent执行。
+        ⚠️ 当前未使用：保留用于未来扩展
+        
+        委托给ToolSelectionAgent执行。当前OrchestratorAgent使用
+        静态工作流模板（WORKFLOW_TEMPLATES）而非动态工具选择。
+        
+        未来启用条件：
+        - 实现自定义分析流程
+        - 添加插件系统
+        - 支持用户定义工作流
         
         Args:
             task: 任务描述
