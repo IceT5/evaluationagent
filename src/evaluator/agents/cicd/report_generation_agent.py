@@ -2,7 +2,7 @@
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -11,12 +11,12 @@ class ReportGenerationAgent(BaseAgent):
     
     负责生成最终的Markdown和HTML报告。
     
-    输入（CICDState）:
+    输入（EvaluatorState）:
     - ci_data_path: CI数据路径
     - merged_response: LLM响应内容
     - storage_dir: 存储目录
     
-    输出（CICDState）:
+    输出（EvaluatorState）:
     - report_md: Markdown报告路径
     - report_html: HTML报告路径
     """
@@ -35,7 +35,7 @@ class ReportGenerationAgent(BaseAgent):
     def __init__(self):
         super().__init__()
     
-    def run(self, state):
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行报告生成"""
         from evaluator.skills import CIAnalyzer
         
@@ -88,13 +88,13 @@ class SummaryGenerationAgent(BaseAgent):
     
     负责从LLM响应中提取并生成分析摘要JSON。
     
-    输入（CICDState）:
+    输入（EvaluatorState）:
     - merged_response: LLM响应内容
     - ci_data: 项目数据
     - architecture_json: 架构JSON
     - storage_dir: 存储目录
     
-    输出（CICDState）:
+    输出（EvaluatorState）:
     - analysis_summary: 分析摘要
     """
     
@@ -112,7 +112,7 @@ class SummaryGenerationAgent(BaseAgent):
     def __init__(self):
         super().__init__()
     
-    def run(self, state):
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行摘要生成"""
         import json
         import re

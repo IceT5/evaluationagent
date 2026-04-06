@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -15,12 +15,12 @@ class StageOrganizationAgent(BaseAgent):
     1. 验证阶段组织是否正确
     2. 根据架构图重新组织阶段内容
     
-    输入（CICDState）:
+    输入（EvaluatorState）:
     - merged_response: LLM响应
     - architecture_json: 架构JSON
     - ci_data: 项目数据
     
-    输出（CICDState）:
+    输出（EvaluatorState）:
     - merged_response: 组织后的响应
     """
     
@@ -35,7 +35,7 @@ class StageOrganizationAgent(BaseAgent):
             dependencies=["QualityCheckAgent"],
         )
     
-    def run(self, state):
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行阶段组织"""
         merged_response = state.get("merged_response", "")
         architecture_json = state.get("architecture_json", {})

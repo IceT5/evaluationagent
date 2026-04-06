@@ -18,7 +18,7 @@ except ImportError:
     config = None
 
 from evaluator.utils import parallel_execute
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 # 导入中断控制器
@@ -468,8 +468,8 @@ class LLMInvocationAgent(BaseAgent):
     """LLM 调用 Agent
     
     职责：根据策略执行 LLM 调用（单次/并发）
-    输入：CICDState.prompts, strategy
-    输出：CICDState.llm_responses
+    输入：EvaluatorState.prompts, strategy
+    输出：EvaluatorState.llm_responses
     """
     
     @classmethod
@@ -487,7 +487,7 @@ class LLMInvocationAgent(BaseAgent):
         super().__init__()
         self.llm = llm
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行 LLM 调用"""
         strategy = state.get("strategy")
         prompts = state.get("prompts", [])
@@ -560,7 +560,7 @@ class LLMInvocationAgent(BaseAgent):
         
         return []
     
-    def _multi_round_call(self, state: CICDState) -> List[Dict[str, Any]]:
+    def _multi_round_call(self, state: EvaluatorState) -> List[Dict[str, Any]]:
         """多轮对话调用
         
         执行步骤：

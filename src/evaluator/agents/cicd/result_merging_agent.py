@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional
 from collections import defaultdict
 
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -13,8 +13,8 @@ class ResultMergingAgent(BaseAgent):
     """结果合并 Agent
     
     职责：合并多个 LLM 响应为一个完整的报告
-    输入：CICDState.llm_responses, ci_data
-    输出：CICDState.merged_response
+    输入：EvaluatorState.llm_responses, ci_data
+    输出：EvaluatorState.merged_response
     """
     
     @classmethod
@@ -28,7 +28,7 @@ class ResultMergingAgent(BaseAgent):
             dependencies=["LLMInvocationAgent"],
         )
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行合并（LangGraph 节点接口）"""
         responses = state.get("llm_responses", [])
         ci_data = state.get("ci_data") or {}

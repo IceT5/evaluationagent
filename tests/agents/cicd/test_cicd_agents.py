@@ -4,12 +4,12 @@ from unittest.mock import MagicMock, patch
 
 
 class TestCICDState:
-    """测试 CICDState"""
+    """测试 EvaluatorState（原CICDState已合并）"""
     
     def test_cicd_state_import(self):
-        """测试 CICDState 导入"""
-        from evaluator.agents.cicd import CICDState
-        assert CICDState is not None
+        """测试 EvaluatorState 导入（CICDState已合并到EvaluatorState）"""
+        from evaluator.state import EvaluatorState
+        assert EvaluatorState is not None
 
 
 class TestDataExtractionAgent:

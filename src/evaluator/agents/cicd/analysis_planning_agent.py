@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional, List
 
 from evaluator.skills import CIAnalyzer
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 try:
@@ -18,8 +18,8 @@ class AnalysisPlanningAgent(BaseAgent):
     """分析策略规划 Agent
     
     职责：根据工作流数量和 prompt 大小决定分析策略
-    输入：CICDState.ci_data, workflow_count
-    输出：CICDState.strategy, prompts, prompt_strategy
+    输入：EvaluatorState.ci_data, workflow_count
+    输出：EvaluatorState.strategy, prompts, prompt_strategy
     """
     
     @classmethod
@@ -37,7 +37,7 @@ class AnalysisPlanningAgent(BaseAgent):
         super().__init__()
         self.ci_analyzer = CIAnalyzer()
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """决定分析策略"""
         workflow_count = state.get("workflow_count", 0)
         ci_data = state.get("ci_data", {})

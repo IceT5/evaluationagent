@@ -47,7 +47,6 @@ class TestAgentImports:
     def test_cicd_sub_agents_import(self):
         """测试 CI/CD 子 Agent 导入"""
         from evaluator.agents.cicd import (
-            CICDState,
             DataExtractionAgent,
             AnalysisPlanningAgent,
             LLMInvocationAgent,
@@ -55,7 +54,8 @@ class TestAgentImports:
             QualityCheckAgent,
             CICDOrchestrator,
         )
-        assert CICDState is not None
+        from evaluator.state import EvaluatorState
+        assert EvaluatorState is not None
         assert DataExtractionAgent is not None
         assert AnalysisPlanningAgent is not None
         assert CICDOrchestrator is not None

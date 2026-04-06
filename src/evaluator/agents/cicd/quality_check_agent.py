@@ -11,7 +11,7 @@ except ImportError:
     HAS_LLM = False
     LLMClient = None
 
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -23,8 +23,8 @@ class QualityCheckAgent(BaseAgent):
     - 概述准确性
     - 阶段划分合理性
     - JSON 数据有效性
-    输入：CICDState.merged_response, ci_data, architecture_json
-    输出：CICDState.validation_result
+    输入：EvaluatorState.merged_response, ci_data, architecture_json
+    输出：EvaluatorState.validation_result
     """
     
     @classmethod
@@ -42,7 +42,7 @@ class QualityCheckAgent(BaseAgent):
         super().__init__()
         self.llm = llm
     
-    def run(self, state):
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行质量检查"""
         merged_response = state.get("merged_response", "")
         ci_data = state.get("ci_data") or {}

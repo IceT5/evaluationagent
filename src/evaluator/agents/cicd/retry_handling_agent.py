@@ -11,7 +11,7 @@ except ImportError:
     HAS_LLM = False
     LLMClient = None
 
-from .state import CICDState
+from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
 
 
@@ -22,13 +22,13 @@ class RetryHandlingAgent(BaseAgent):
     1. retry模式：根据问题修正报告
     2. supplement模式：补充缺失内容
     
-    输入（CICDState）:
+    输入（EvaluatorState）:
     - retry_mode: retry/supplement
     - retry_issues: 问题列表
     - cicd_existing_report: 现有报告
     - ci_data: 项目数据
     
-    输出（CICDState）:
+    输出（EvaluatorState）:
     - merged_response: 修正/补充后的响应（替换原有merged_response）
     - retry_count: 重试次数
     """
@@ -48,7 +48,7 @@ class RetryHandlingAgent(BaseAgent):
         super().__init__()
         self.llm = llm
     
-    def run(self, state: CICDState) -> CICDState:
+    def run(self, state: EvaluatorState) -> EvaluatorState:
         """执行重试处理"""
         retry_mode = state.get("retry_mode")
         retry_issues = state.get("retry_issues", [])
