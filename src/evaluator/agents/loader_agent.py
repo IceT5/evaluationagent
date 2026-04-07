@@ -73,6 +73,7 @@ class LoaderAgent(BaseAgent):
         return {
             "storage_version_id": version_id,
             "storage_dir": str(version_dir),
+            "display_name": display_name,
         }
 
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:

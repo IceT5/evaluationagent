@@ -123,6 +123,9 @@ class StorageAgent(BaseAgent):
         ci_data_b: dict,
     ) -> float:
         """计算两个项目的架构相似度"""
+        if not ci_data_a or not ci_data_b:
+            return 0.0
+        
         workflows_a = set(ci_data_a.get("workflows", {}).keys())
         workflows_b = set(ci_data_b.get("workflows", {}).keys())
         

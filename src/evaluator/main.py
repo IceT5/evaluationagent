@@ -58,6 +58,7 @@ def main():
         "report_path": None,
         "should_download": False,
         "current_step": "",
+        "completed_steps": [],
         "errors": [],
         "storage_version_id": None,
         "storage_dir": None,

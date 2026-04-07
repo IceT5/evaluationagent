@@ -56,12 +56,18 @@ class OrchestratorAgent(BaseAgent):
     
     WORKFLOW_TEMPLATES = {
         "analyze": ["input", "loader", "cicd", "reviewer", "reporter"],
-        "analyze_skip_review": ["input", "loader", "cicd", "reporter"],
         "compare": ["compare"],
         "list": ["list_handler"],
         "info": ["info_handler"],
         "delete": ["delete_handler"],
         "help": ["help_handler"],
+        "insights": ["insights_handler"],
+        "recommend": ["recommend_handler"],
+        "similar": ["similar_handler"],
+        "analyzers": ["analyzers_handler"],
+        "version": ["version_handler"],
+        "clear": ["clear_handler"],
+        "quit": ["quit_handler"],
         "unknown": [],
     }
     
@@ -121,12 +127,7 @@ class OrchestratorAgent(BaseAgent):
     
     def _get_workflow(self, intent: str, state: Dict[str, Any]) -> List[str]:
         """获取工作流"""
-        workflow = self.WORKFLOW_TEMPLATES.get(intent, [])
-        
-        if self._should_skip_review(state):
-            workflow = [step for step in workflow if step != "reviewer"]
-        
-        return workflow
+        return self.WORKFLOW_TEMPLATES.get(intent, [])
     
     def _decide_next_step(
         self,
@@ -215,15 +216,7 @@ class OrchestratorAgent(BaseAgent):
         Returns:
             Agent 执行顺序列表
         """
-        workflow = self.WORKFLOW_TEMPLATES.get(intent, [])
-        
-        if not workflow:
-            return []
-        
-        if self._should_skip_review(state):
-            workflow = [step for step in workflow if step != "reviewer"]
-        
-        return workflow
+        return self.WORKFLOW_TEMPLATES.get(intent, [])
     
     def should_retry(
         self,
@@ -289,18 +282,6 @@ class OrchestratorAgent(BaseAgent):
             self.tool_selector = ToolSelectionAgent(llm=self.llm)
         
         return self.tool_selector.select_tools(task, context)
-    
-    def _should_skip_review(self, state: Dict[str, Any]) -> bool:
-        """判断是否应该跳过 review"""
-        skip_review = state.get("skip_review", False)
-        if skip_review:
-            return True
-        
-        workflow_count = (state.get("cicd_analysis") or {}).get("workflows_count", 0)
-        if workflow_count <= 5:
-            return True
-        
-        return False
     
     def get_next_step(
         self,

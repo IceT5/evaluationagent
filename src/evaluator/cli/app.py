@@ -20,15 +20,8 @@ else:
     load_dotenv()
 
 from evaluator.core import (
-    analyze_project,
-    compare_projects,
     list_projects,
-    get_project,
-    delete_project,
-    list_analyzers,
-    get_storage_info,
 )
-from evaluator.core.types import AnalysisResult, ComparisonResult, ProjectInfo
 from evaluator.agents.intent_parser_agent import IntentParserAgent, Intent, ParsedIntent
 from evaluator.skills import UrlParser
 from evaluator.cli.context import ConversationContext, get_context
@@ -148,7 +141,6 @@ class CommandHandler:
         self.intent_parser = IntentParserAgent(llm=llm_client) if llm_client else IntentParserAgent()
         self.context = get_context()
         self._graph = None
-        self._background = None
     
     @property
     def graph(self):
@@ -164,14 +156,6 @@ class CommandHandler:
                 }
             self._graph = create_main_graph(llm_config=llm_config)
         return self._graph
-    
-    @property
-    def background(self):
-        """延迟加载后台任务管理器"""
-        if self._background is None:
-            from evaluator.core.background import background
-            self._background = background
-        return self._background
     
     def handle(self, command: str, args: Dict[str, Any]) -> bool:
         """处理命令，返回是否退出"""
@@ -238,6 +222,7 @@ class CommandHandler:
             "llm_config": llm_config or {},
             "known_projects": known_projects,
             "context": {"last_project": self.context.last_project},
+            "current_step": "",
             "completed_steps": [],
             "errors": [],
             "warnings": [],
@@ -343,6 +328,7 @@ class CommandHandler:
             "project_a": project_a,
             "project_b": project_b,
             "dimensions": dimensions,
+            "current_step": "",
             "completed_steps": [],
             "errors": [],
             "warnings": [],
@@ -423,6 +409,7 @@ class CommandHandler:
                 "intent": "list",
                 "next_step": "list_handler",
             },
+            "current_step": "",
             "errors": [],
             "warnings": [],
             "completed_steps": [],
@@ -477,6 +464,7 @@ class CommandHandler:
                 "next_step": "info_handler",
             },
             "project_name": name,
+            "current_step": "",
             "errors": [],
             "warnings": [],
             "completed_steps": [],
@@ -537,6 +525,7 @@ class CommandHandler:
                 "next_step": "delete_handler",
             },
             "project_name": name,
+            "current_step": "",
             "errors": [],
             "warnings": [],
             "completed_steps": [],
@@ -567,56 +556,74 @@ class CommandHandler:
         
         from storage import StorageManager
         storage = StorageManager()
-        
         version_dir = storage.get_latest_version_dir(project_name)
-        if not version_dir:
-            self.output_func(f"项目不存在: {project_name}")
+        
+        initial_state = {
+            "user_input": f"/insights {project_name}",
+            "intent": "insights",
+            "project_name": project_name,
+            "storage_dir": str(version_dir) if version_dir else None,
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "insights",
+                "next_step": "insights_handler",
+            },
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
             return False
         
-        insights = self.background.load_insights(project_name, str(version_dir))
+        insights_result = final_state.get("insights_result", {})
         
-        if insights:
+        if insights_result.get("success"):
             self.output_func(f"\n智能分析结果: {project_name}")
             self.output_func("=" * 50)
             
-            if insights.recommendations:
-                self.output_func(f"\n改进建议 ({len(insights.recommendations)} 项):")
-                for rec in insights.recommendations[:5]:
+            recommendations = insights_result.get("recommendations", [])
+            if recommendations:
+                self.output_func(f"\n改进建议 ({len(recommendations)} 项):")
+                for rec in recommendations[:5]:
                     priority = rec.get('priority', 'medium')
                     priority_icon = {"high": "🔴", "medium": "🟡", "low": "🟢"}.get(priority, "⚪")
                     self.output_func(f"  {priority_icon} [{priority.upper()}] {rec.get('title', '')}")
                     if rec.get('action'):
                         self.output_func(f"      → {rec.get('action')}")
             
-            if insights.similar_projects:
-                self.output_func(f"\n相似项目 ({len(insights.similar_projects)} 个):")
-                for sim in insights.similar_projects[:5]:
+            similar_projects = insights_result.get("similar_projects", [])
+            if similar_projects:
+                self.output_func(f"\n相似项目 ({len(similar_projects)} 个):")
+                for sim in similar_projects[:5]:
                     name = sim.get('name', '')
                     similarity = sim.get('similarity', 0)
                     self.output_func(f"  • {name} (相似度: {similarity:.0%})")
             
-            if insights.quick_wins:
+            quick_wins = insights_result.get("quick_wins", [])
+            if quick_wins:
                 self.output_func(f"\n快速改进项:")
-                for qw in insights.quick_wins[:3]:
+                for qw in quick_wins[:3]:
                     self.output_func(f"  ⚡ {qw.get('title', '')}")
                     self.output_func(f"     投入: {qw.get('effort', 'N/A')} | 收益: {qw.get('impact', 'N/A')}")
             
-            if insights.reflection_result:
-                refl = insights.reflection_result
+            reflection_result = insights_result.get("reflection_result", {})
+            if reflection_result:
                 self.output_func(f"\n执行分析:")
-                self.output_func(f"  成功率: {refl.get('success_rate', 0):.0%}")
-                self.output_func(f"  平均耗时: {refl.get('avg_duration', 0):.1f}s")
-                if refl.get('bottlenecks'):
-                    self.output_func(f"  瓶颈: {refl['bottlenecks'][0]}")
+                self.output_func(f"  成功率: {reflection_result.get('success_rate', 0):.0%}")
+                self.output_func(f"  平均耗时: {reflection_result.get('avg_duration', 0):.1f}s")
+                if reflection_result.get('bottlenecks'):
+                    self.output_func(f"  瓶颈: {reflection_result['bottlenecks'][0]}")
             
-            self.output_func(f"\n生成时间: {insights.generated_at}")
+            generated_at = insights_result.get("generated_at")
+            if generated_at:
+                self.output_func(f"\n生成时间: {generated_at}")
         else:
-            status = self.background.get_status(project_name)
-            if status and status["status"] == "running":
-                self.output_func("智能分析正在进行中，请稍后再试...")
-            else:
-                self.output_func(f"未找到智能分析结果")
-                self.output_func(f"提示: 先执行 /analyze 命令，分析完成后会自动生成智能结果")
+            self.output_func(insights_result.get("error", "未找到智能分析结果"))
         
         return False
     
@@ -633,27 +640,49 @@ class CommandHandler:
         storage = StorageManager()
         version_dir = storage.get_latest_version_dir(project_name)
         
-        insights = self.background.load_insights(project_name, str(version_dir) if version_dir else None)
+        initial_state = {
+            "user_input": f"/recommend {project_name}",
+            "intent": "recommend",
+            "project_name": project_name,
+            "storage_dir": str(version_dir) if version_dir else None,
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "recommend",
+                "next_step": "recommend_handler",
+            },
+        }
         
-        if insights and insights.recommendations:
-            self.output_func(f"\n改进建议: {project_name}")
-            self.output_func("=" * 50)
-            
-            for i, rec in enumerate(insights.recommendations, 1):
-                priority = rec.get('priority', 'medium')
-                self.output_func(f"\n{i}. [{priority.upper()}] {rec.get('title', '')}")
-                if rec.get('description'):
-                    self.output_func(f"   {rec.get('description')}")
-                if rec.get('action'):
-                    self.output_func(f"   → 操作: {rec.get('action')}")
-                if rec.get('effort'):
-                    self.output_func(f"   → 投入: {rec.get('effort')}")
-        else:
-            status = self.background.get_status(project_name)
-            if status and status["status"] == "running":
-                self.output_func("正在生成建议，请稍后...")
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
+        recommend_result = final_state.get("recommend_result", {})
+        
+        if recommend_result.get("success"):
+            recommendations = recommend_result.get("recommendations", [])
+            if recommendations:
+                self.output_func(f"\n改进建议: {project_name}")
+                self.output_func("=" * 50)
+                
+                for i, rec in enumerate(recommendations, 1):
+                    priority = rec.get('priority', 'medium')
+                    self.output_func(f"\n{i}. [{priority.upper()}] {rec.get('title', '')}")
+                    if rec.get('description'):
+                        self.output_func(f"   {rec.get('description')}")
+                    if rec.get('action'):
+                        self.output_func(f"   → 操作: {rec.get('action')}")
+                    if rec.get('effort'):
+                        self.output_func(f"   → 投入: {rec.get('effort')}")
             else:
-                self.output_func(f"未找到改进建议，请先执行 /analyze")
+                self.output_func(f"未找到改进建议")
+        else:
+            self.output_func(recommend_result.get("error", "未找到改进建议"))
         
         return False
     
@@ -670,42 +699,88 @@ class CommandHandler:
         storage = StorageManager()
         version_dir = storage.get_latest_version_dir(project_name)
         
-        insights = self.background.load_insights(project_name, str(version_dir) if version_dir else None)
+        initial_state = {
+            "user_input": f"/similar {project_name}",
+            "intent": "similar",
+            "project_name": project_name,
+            "storage_dir": str(version_dir) if version_dir else None,
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "similar",
+                "next_step": "similar_handler",
+            },
+        }
         
-        if insights and insights.similar_projects:
-            self.output_func(f"\n相似项目: {project_name}")
-            self.output_func("=" * 50)
-            
-            for sim in insights.similar_projects:
-                name = sim.get('name', '')
-                similarity = sim.get('similarity', 0)
-                reason = sim.get('reason', '')
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
+        similar_result = final_state.get("similar_result", {})
+        
+        if similar_result.get("success"):
+            similar_projects = similar_result.get("similar_projects", [])
+            if similar_projects:
+                self.output_func(f"\n相似项目: {project_name}")
+                self.output_func("=" * 50)
                 
-                self.output_func(f"\n• {name} ({similarity:.0%})")
-                if reason:
-                    self.output_func(f"  原因: {reason}")
-                
-                if sim.get('suggest_compare'):
-                    self.output_func(f"  → 建议对比: /compare {project_name} {name}")
-        else:
-            status = self.background.get_status(project_name)
-            if status and status["status"] == "running":
-                self.output_func("正在分析相似项目，请稍后...")
+                for sim in similar_projects:
+                    name = sim.get('name', '')
+                    similarity = sim.get('similarity', 0)
+                    reason = sim.get('reason', '')
+                    
+                    self.output_func(f"\n• {name} ({similarity:.0%})")
+                    if reason:
+                        self.output_func(f"  原因: {reason}")
+                    
+                    if sim.get('suggest_compare'):
+                        self.output_func(f"  → 建议对比: /compare {project_name} {name}")
             else:
-                self.output_func(f"未找到相似项目，请先执行 /analyze")
+                self.output_func(f"未找到相似项目")
+        else:
+            self.output_func(similar_result.get("error", "未找到相似项目"))
         
         return False
     
     def _handle_analyzers(self, args: Dict[str, Any]) -> bool:
         """处理 /analyzers 命令"""
-        analyzers = list_analyzers()
+        initial_state = {
+            "user_input": "/analyzers",
+            "intent": "analyzers",
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "analyzers",
+                "next_step": "analyzers_handler",
+            },
+        }
         
-        self.output_func("\n可用的分析器:")
-        self.output_func("-" * 50)
+        final_state = self.graph.invoke(initial_state)
         
-        for a in analyzers:
-            status = "[x]" if a.enabled else "[ ]"
-            self.output_func(f"  {status} {a.name:<15} {a.description}")
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
+        analyzers_result = final_state.get("analyzers_result", {})
+        
+        if analyzers_result.get("success"):
+            analyzers = analyzers_result.get("analyzers", [])
+            self.output_func("\n可用的分析器:")
+            self.output_func("-" * 50)
+            
+            for a in analyzers:
+                status = "[x]" if a.get("enabled") else "[ ]"
+                self.output_func(f"  {status} {a.get('name', ''):<15} {a.get('description', '')}")
+        else:
+            self.output_func(analyzers_result.get("error", "获取分析器失败"))
         
         return False
     
@@ -713,129 +788,114 @@ class CommandHandler:
         """处理 /help 命令"""
         topic = args.get("topic")
         
-        if topic == "analyze":
-            self.output_func("\n/analyze 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /analyze [type] <path>")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /analyze ./my-project")
-            self.output_func("  /analyze cicd ./my-project")
-            self.output_func("")
-            self.output_func("可用类型: cicd (默认)")
-        elif topic == "compare":
-            self.output_func("\n/compare 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /compare <project_a> <project_b> [--dim dimensions]")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /compare project-a project-b")
-            self.output_func("  /compare project-a project-b --dim complexity,best_practices")
-            self.output_func("  (默认使用 LLM 进行语义分析)")
-        elif topic == "insights":
-            self.output_func("\n/insights 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /insights [project_name]")
-            self.output_func("")
-            self.output_func("显示项目的智能分析结果，包括：")
-            self.output_func("  - 改进建议")
-            self.output_func("  - 相似项目")
-            self.output_func("  - 快速改进项")
-            self.output_func("  - 执行分析")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /insights cccl")
-        elif topic == "recommend":
-            self.output_func("\n/recommend 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /recommend [project_name]")
-            self.output_func("")
-            self.output_func("显示项目的改进建议")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /recommend cccl")
-        elif topic == "similar":
-            self.output_func("\n/similar 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /similar [project_name]")
-            self.output_func("")
-            self.output_func("显示与项目相似的其他项目")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /similar cccl")
-        elif topic == "list":
-            self.output_func("\n/list 命令")
-            self.output_func("-" * 50)
-            self.output_func("用法: /list [--all]")
-            self.output_func("")
-            self.output_func("示例:")
-            self.output_func("  /list")
-            self.output_func("  /list --all")
+        initial_state = {
+            "user_input": f"/help {topic}" if topic else "/help",
+            "intent": "help",
+            "params": {"topic": topic},
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "help",
+                "next_step": "help_handler",
+            },
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
+        help_result = final_state.get("help_result", {})
+        
+        if help_result.get("success") or help_result.get("content"):
+            self.output_func(help_result.get("content", ""))
         else:
-            self._print_help()
+            self.output_func(help_result.get("error", "获取帮助失败"))
         
         return False
     
-    def _print_help(self) -> None:
-        """打印帮助信息"""
-        self.output_func(f"""
-╭──────────────────────────────────────────────────────────────╮
-│  eval-agent v{self.VERSION} - CI/CD 架构评估工具                        │
-╰──────────────────────────────────────────────────────────────╯
-
-支持的命令：
-
-  /analyze [type] <path>
-              分析项目的 CI/CD 架构
-              type: 分析类型 (默认: cicd)
-              示例: /analyze ./my-project
-
-  /compare <a> <b> [--dim dims]
-              对比两个项目的 CI 架构
-              示例: /compare project-a project-b
-
-  /list [--all]  列出已保存的项目
-
-  /show <name>   显示项目详情
-              示例: /show my-project
-
-  /delete <name> 删除项目
-              示例: /delete my-project
-
-  /insights [n]  显示智能分析结果
-              示例: /insights cccl
-
-  /recommend [n] 显示改进建议
-              示例: /recommend cccl
-
-  /similar [n]   显示相似项目
-              示例: /similar cccl
-
-  /analyzers     列出可用的分析器
-
-  /help [topic]  显示帮助
-              示例: /help analyze
-
-  /version       显示版本信息
-
-  /clear         清除屏幕
-
-  /quit, /exit   退出程序
-""")
-    
     def _handle_version(self, args: Dict[str, Any]) -> bool:
         """处理 /version 命令"""
-        self.output_func(f"eval-agent v{self.VERSION}")
+        initial_state = {
+            "user_input": "/version",
+            "intent": "version",
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "version",
+                "next_step": "version_handler",
+            },
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
+        version_result = final_state.get("version_result", {})
+        
+        if version_result.get("success"):
+            version = version_result.get("version", "unknown")
+            self.output_func(f"eval-agent v{version}")
+        else:
+            self.output_func(version_result.get("error", "获取版本失败"))
+        
         return False
     
     def _handle_quit(self, args: Dict[str, Any]) -> bool:
         """处理退出命令"""
+        initial_state = {
+            "user_input": "/quit",
+            "intent": "quit",
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "quit",
+                "next_step": "quit_handler",
+            },
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+            return False
+        
         self.output_func("再见!")
-        return True
+        return final_state.get("should_quit", True)
     
     def _handle_clear(self, args: Dict[str, Any]) -> bool:
         """处理清除屏幕命令"""
-        os.system("cls" if os.name == "nt" else "clear")
+        initial_state = {
+            "user_input": "/clear",
+            "intent": "clear",
+            "current_step": "",
+            "completed_steps": [],
+            "errors": [],
+            "warnings": [],
+            "orchestrator_decision": {
+                "intent": "clear",
+                "next_step": "clear_handler",
+            },
+        }
+        
+        final_state = self.graph.invoke(initial_state)
+        
+        if final_state.get("errors"):
+            for err in final_state["errors"]:
+                self.output_func(f"  - {err}")
+        
         return False
     
     def route_intent(self, parsed: "ParsedIntent") -> bool:

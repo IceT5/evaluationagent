@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from typing import Optional
 import json
+import re
 
 
 @dataclass
@@ -20,7 +21,13 @@ class ProjectVersion:
 
     @staticmethod
     def generate_version_id(existing_versions: list[str]) -> str:
-        version_num = len(existing_versions) + 1
+        max_version = 0
+        for v in existing_versions:
+            match = re.match(r'v(\d+)_', v)
+            if match:
+                max_version = max(max_version, int(match.group(1)))
+        
+        version_num = max_version + 1
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         return f"v{version_num}_{timestamp}"
 

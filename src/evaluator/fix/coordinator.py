@@ -54,7 +54,7 @@ class FixCoordinator:
                 summary=summary,
                 fix_log=fix_log,
                 success=False,
-                message=str(e),
+                message=f"修复失败: {e}。建议重新执行 CICD 分析。",
             )
     
     def _fix_with_method(self, report: str, issues: List[Dict], 
@@ -85,6 +85,9 @@ class FixCoordinator:
                 "type": inst.type,
                 "action": inst.action,
                 "status": "fixed",
+                "workflow": inst.sync_data.get("workflow") if inst.sync_data else None,
+                "entity": inst.sync_data.get("entity") if inst.sync_data else None,
+                "message": inst.sync_data.get("message") if inst.sync_data else None,
             })
         
         return report, arch, summary, fix_log
@@ -138,4 +141,5 @@ class FixCoordinator:
         return {
             "workflow": issue.get("workflow"),
             "entity": issue.get("entity"),
+            "message": issue.get("message"),
         }

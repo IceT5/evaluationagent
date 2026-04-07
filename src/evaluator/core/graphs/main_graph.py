@@ -31,6 +31,7 @@ from evaluator.core.routes import (
     route_after_validate,
     route_after_reviewer,
     route_after_report_fix,
+    route_after_handler,
 )
 
 
@@ -119,6 +120,13 @@ def create_main_graph(
         InfoHandlerAgent,
         DeleteHandlerAgent,
         HelpHandlerAgent,
+        InsightsHandlerAgent,
+        RecommendHandlerAgent,
+        SimilarHandlerAgent,
+        AnalyzersHandlerAgent,
+        VersionHandlerAgent,
+        ClearHandlerAgent,
+        QuitHandlerAgent,
     )
     
     llm = None
@@ -146,6 +154,13 @@ def create_main_graph(
         "info_handler": InfoHandlerAgent(),
         "delete_handler": DeleteHandlerAgent(),
         "help_handler": HelpHandlerAgent(),
+        "insights_handler": InsightsHandlerAgent(),
+        "recommend_handler": RecommendHandlerAgent(),
+        "similar_handler": SimilarHandlerAgent(),
+        "analyzers_handler": AnalyzersHandlerAgent(),
+        "version_handler": VersionHandlerAgent(),
+        "clear_handler": ClearHandlerAgent(),
+        "quit_handler": QuitHandlerAgent(),
     }
     
     missing_deps = validate_agent_dependencies(agents)
@@ -171,13 +186,22 @@ def create_main_graph(
     workflow.add_node("info_handler", _create_node(agents["info_handler"]))
     workflow.add_node("delete_handler", _create_node(agents["delete_handler"]))
     workflow.add_node("help_handler", _create_node(agents["help_handler"]))
+    workflow.add_node("insights_handler", _create_node(agents["insights_handler"]))
+    workflow.add_node("recommend_handler", _create_node(agents["recommend_handler"]))
+    workflow.add_node("similar_handler", _create_node(agents["similar_handler"]))
+    workflow.add_node("analyzers_handler", _create_node(agents["analyzers_handler"]))
+    workflow.add_node("version_handler", _create_node(agents["version_handler"]))
+    workflow.add_node("clear_handler", _create_node(agents["clear_handler"]))
+    workflow.add_node("quit_handler", _create_node(agents["quit_handler"]))
     
     workflow.set_entry_point("intent_parser")
     workflow.add_edge("intent_parser", "orchestrator")
     
     all_steps = {"input", "loader", "cicd", "reviewer", "report_fix", "reporter", "compare",
                  "error_handler", "list_handler", "info_handler", "delete_handler", 
-                 "help_handler", "validate", "end"}
+                 "help_handler", "insights_handler", "recommend_handler", "similar_handler",
+                 "analyzers_handler", "version_handler", "clear_handler", "quit_handler",
+                 "validate", "end"}
     route_targets = {step: step for step in all_steps}
     route_targets["end"] = END
     
@@ -231,10 +255,62 @@ def create_main_graph(
     
     workflow.add_edge("reporter", END)
     workflow.add_edge("compare", END)
-    workflow.add_edge("list_handler", END)
-    workflow.add_edge("info_handler", END)
-    workflow.add_edge("delete_handler", END)
-    workflow.add_edge("help_handler", END)
+    
+    workflow.add_conditional_edges(
+        "list_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "info_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "delete_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "help_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "insights_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "recommend_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "similar_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "analyzers_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "version_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "clear_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
+    workflow.add_conditional_edges(
+        "quit_handler",
+        route_after_handler,
+        {"error_handler": "error_handler", "end": END}
+    )
     
     return workflow.compile()
 

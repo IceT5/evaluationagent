@@ -31,44 +31,55 @@ class DeleteHandlerAgent(BaseAgent):
         Returns:
             更新后的状态，包含 delete_result
         """
-        params = state.get("params", {})
-        project_name = params.get("project")
-        version = params.get("version")
-        
-        if not project_name:
+        try:
+            params = state.get("params", {})
+            project_name = params.get("project")
+            version = params.get("version")
+            
+            if not project_name:
+                return {
+                    **state,
+                    "delete_result": {
+                        "success": False,
+                        "error": "未指定项目名称",
+                    },
+                    "errors": state.get("errors", []) + ["未指定项目名称"],
+                    "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
+                }
+            
+            success = delete_project(project_name, version)
+            
+            if success:
+                msg = f"已删除项目 {project_name}"
+                if version:
+                    msg += f" 的版本 {version}"
+                return {
+                    **state,
+                    "delete_result": {
+                        "success": True,
+                        "message": msg,
+                        "project_name": project_name,
+                        "version": version,
+                    },
+                    "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
+                }
+            else:
+                return {
+                    **state,
+                    "delete_result": {
+                        "success": False,
+                        "error": f"项目不存在: {project_name}",
+                    },
+                    "errors": state.get("errors", []) + [f"项目不存在: {project_name}"],
+                    "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
+                }
+        except Exception as e:
             return {
                 **state,
                 "delete_result": {
                     "success": False,
-                    "error": "未指定项目名称",
+                    "error": str(e),
                 },
-                "errors": state.get("errors", []) + ["未指定项目名称"],
-                "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
-            }
-        
-        success = delete_project(project_name, version)
-        
-        if success:
-            msg = f"已删除项目 {project_name}"
-            if version:
-                msg += f" 的版本 {version}"
-            return {
-                **state,
-                "delete_result": {
-                    "success": True,
-                    "message": msg,
-                    "project_name": project_name,
-                    "version": version,
-                },
-                "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
-            }
-        else:
-            return {
-                **state,
-                "delete_result": {
-                    "success": False,
-                    "error": f"项目不存在: {project_name}",
-                },
-                "errors": state.get("errors", []) + [f"项目不存在: {project_name}"],
+                "errors": state.get("errors", []) + [f"DeleteHandlerAgent: {e}"],
                 "completed_steps": state.get("completed_steps", []) + ["delete_handler"],
             }

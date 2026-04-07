@@ -123,10 +123,16 @@ class EvaluatorState(TypedDict, total=False):
     info_result: Optional[Dict]
     delete_result: Optional[Dict]
     help_result: Optional[Dict]
+    insights_result: Optional[Dict]
+    recommend_result: Optional[Dict]
+    similar_result: Optional[Dict]
+    analyzers_result: Optional[Dict]
+    version_result: Optional[Dict]
+    clear_result: Optional[Dict]
+    quit_result: Optional[Dict]
     
     # ========== 控制流 ==========
     should_download: Optional[bool]
-    skip_review: bool
     current_step: Optional[str]
     orchestrator_decision: Optional[Dict]
     

@@ -224,10 +224,10 @@ class BackgroundTasks:
                     parent_run_id=parent_run_id,
                 ):
                     pipeline = IntelligencePipeline(llm=llm)
-                    current_state = pipeline.run(state)
+                    current_state = pipeline.safe_run(state)
             else:
                 pipeline = IntelligencePipeline(llm=llm)
-                current_state = pipeline.run(state)
+                current_state = pipeline.safe_run(state)
             
             self._save_insights(current_state)
             

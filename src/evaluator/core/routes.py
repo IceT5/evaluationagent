@@ -130,26 +130,6 @@ def route_after_reporter(state: EvaluatorState) -> Literal["success", "error_han
 
 
 @traceable()
-def should_skip_review(state: EvaluatorState) -> bool:
-    """判断是否应该跳过 review 步骤
-    
-    Returns:
-        True: 跳过 review
-        False: 不跳过
-    """
-    if state.get("skip_review", False):
-        return True
-    
-    cicd_analysis = state.get("cicd_analysis", {})
-    workflow_count = cicd_analysis.get("workflows_count", 0)
-    
-    if workflow_count <= 5:
-        return True
-    
-    return False
-
-
-@traceable()
 def should_use_parallel(state: EvaluatorState) -> bool:
     """判断是否应该使用并行分析
     
@@ -264,7 +244,9 @@ INTENT_WORKFLOWS = {
 def route_intent(state: EvaluatorState) -> Literal[
     "input", "loader", "cicd", "reviewer", "reporter",
     "compare", "list_handler", "info_handler", "delete_handler",
-    "help_handler", "end"
+    "help_handler", "insights_handler", "recommend_handler",
+    "similar_handler", "analyzers_handler", "version_handler",
+    "clear_handler", "quit_handler", "end"
 ]:
     """基于意图的路由 - OrchestratorAgent 决策后调用
     
@@ -437,3 +419,24 @@ def route_after_report_fix(state: EvaluatorState) -> Literal["reviewer", "report
         return "orchestrator"
     
     return "reporter"
+
+
+@traceable(name="route_after_handler", run_type="chain", tags=['router', 'handler'])
+def route_after_handler(state: EvaluatorState) -> Literal["error_handler", "end"]:
+    """handler 之后的路由
+    
+    检查是否有错误，决定是否进入 error_handler。
+    
+    Args:
+        state: 当前状态，包含 errors
+    
+    Returns:
+        error_handler: 有错误，进入错误处理
+        end: 无错误，结束流程
+    """
+    errors = state.get("errors", [])
+    
+    if errors:
+        return "error_handler"
+    
+    return "end"

@@ -31,22 +31,33 @@ class ListHandlerAgent(BaseAgent):
         Returns:
             更新后的状态，包含 list_result
         """
-        info = get_storage_info()
-        projects = list_projects()
-        
-        return {
-            **state,
-            "list_result": {
-                "storage_info": info,
-                "projects": [
-                    {
-                        "name": p.name,
-                        "display_name": p.display_name,
-                        "latest_version": p.latest_version,
-                        "version_count": p.version_count,
-                    }
-                    for p in projects
-                ],
-            },
-            "completed_steps": state.get("completed_steps", []) + ["list_handler"],
-        }
+        try:
+            info = get_storage_info()
+            projects = list_projects()
+            
+            return {
+                **state,
+                "list_result": {
+                    "storage_info": info,
+                    "projects": [
+                        {
+                            "name": p.name,
+                            "display_name": p.display_name,
+                            "latest_version": p.latest_version,
+                            "version_count": p.version_count,
+                        }
+                        for p in projects
+                    ],
+                },
+                "completed_steps": state.get("completed_steps", []) + ["list_handler"],
+            }
+        except Exception as e:
+            return {
+                **state,
+                "list_result": {
+                    "success": False,
+                    "error": str(e),
+                },
+                "errors": state.get("errors", []) + [f"ListHandlerAgent: {e}"],
+                "completed_steps": state.get("completed_steps", []) + ["list_handler"],
+            }

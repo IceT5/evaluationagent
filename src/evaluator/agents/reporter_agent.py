@@ -17,7 +17,7 @@ class ReporterAgent(BaseAgent):
             name="ReporterAgent",
             description="将 Markdown 报告转换为交互式 HTML 报告",
             category="output",
-            inputs=["cicd_analysis", "project_name", "review_result", "corrected_report"],
+            inputs=["cicd_analysis", "project_name", "review_result"],
             outputs=["html_report", "report_path"],
             dependencies=["ReviewerAgent"],
         )

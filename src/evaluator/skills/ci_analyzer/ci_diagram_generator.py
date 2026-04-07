@@ -334,6 +334,8 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 
 ### 2. 每个阶段的输出格式
 
+**必须严格遵守以下格式，不要简化！**
+
 ```
 ## 阶段X：[阶段名称]
 
@@ -347,11 +349,11 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 
 #### X.X workflow-name.yml
 
-**目的**: xxx
+**目的**: [一句话说明]
 
 **触发条件**:
 ```yaml
-触发配置
+[完整触发配置，从数据中提取，不要省略]
 ```
 
 **包含的Job**（共X个）:
@@ -369,13 +371,55 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 **使用的Action**: xxx
 
 **调用的脚本**: xxx
-
-**构建矩阵**（可选，仅当工作流使用矩阵配置时输出）:
-- 配置文件: [矩阵配置文件名]
-- 支持的编译器: [编译器列表]
-- 支持的 CUDA 版本: [版本列表]
-- 估算构建组合数: [数量]
 ```
+
+**关键要求**：
+1. **必须包含"目的"字段**：使用 `**目的**:`，不要使用其他字段名（如"用途"、"功能"等）
+2. **必须包含"触发条件"字段**：使用 `**触发条件**:`，不要使用其他字段名（如"触发方式"、"触发器"等）
+3. **必须包含Job表格**：使用 `**包含的Job**:`，必须包含表格（| 序号 | Job名称 | 运行环境 | 目的 |）
+4. **禁止使用简化格式**：
+   - ❌ 不要使用：`- **用途**:`、`- **特点**:`、`- **被调用者**:`
+   - ✅ 必须使用：`**目的**:`、`**触发条件**:`、`**包含的Job**:`
+
+**禁止的简化格式示例**（不要这样写）：
+```
+#### X.X workflow-name.yml
+- **用途**: xxx
+- **特点**: xxx
+- **被调用者**: xxx
+```
+↑ 这是简化格式，禁止使用！
+
+**正确的完整格式示例**：
+```
+#### 1.1 ci-workflow-pull-request.yml
+
+**目的**: PR验证的主CI流程，在代码提交协作者PR时执行构建和验证测试
+
+**触发条件**:
+```yaml
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+```
+
+**包含的Job**（共15个）:
+| 序号 | Job名称 | 运行环境 | 目的 |
+|-----|---------|---------|------|
+| 1 | build-workflow | ubuntu-latest | 构建主工作流，初始化构建环境 |
+| 2 | dispatch-groups-linux-two-stage | - | 分发Linux两阶段构建任务 |
+| ... | ... | ... | ... |
+
+**依赖关系**: build-workflow → dispatch-groups-linux-two-stage → verify-workflow
+
+**执行步骤详情**:
+- Job 1: build-workflow
+  - 步骤1: Export workflow flags
+  - 步骤2: Checkout repo
+```
+↑ 这是完整格式，必须这样写！
 
 ### 3. 脚本和 Action 索引（必须输出）
 
@@ -415,9 +459,13 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 
 ### 4. 必须完整列出所有 Job
 
-- 不能省略任何 Job
-- 标注 Job 之间的依赖关系
-- 说明触发条件和调用关系
+**重要**：
+- ✅ 对**所有工作流**（包括被调用的辅助工作流）都必须生成完整的分析
+- ✅ 不要因为工作流是通过 workflow_call 被调用就简化处理
+- ✅ 即使工作流只有 1-2 个 Job，也要生成完整表格
+- ✅ 不能省略任何 Job
+- ✅ 标注 Job 之间的依赖关系
+- ✅ 说明触发条件和调用关系
 
 ---
 
@@ -1130,41 +1178,35 @@ def _generate_round_2() -> str:
 - ❌ 简化结构
 - ❌ 重新分类或重新命名
 
-## JSON格式规范
+## 触发层特殊要求（重要！）
 
-**必须使用以下格式**：
-<!-- ARCHITECTURE_JSON
+**触发入口层（第一个layer）必须包含触发类型节点，而不是工作流节点！**
+
+**触发类型来源**：
+触发类型从工作流数据的 `on` 字段中提取，常见类型包括：
+- push、pull_request、schedule、workflow_dispatch、workflow_call、issues、issue_comment、release 等
+
+**重要**：以实际提取到的 `on` 字段为准，不要遗漏任何触发类型！
+
+**触发层格式**：
+```json
 {
-  "layers": [
-    {
-      "id": "layer-1",
-      "name": "触发入口",
-      "nodes": [
-        {"id": "node-1-1", "label": "push", "description": "代码推送触发"},
-        {"id": "node-1-2", "label": "pull_request", "description": "PR触发"}
-      ]
-    },
-    {
-      "id": "layer-2",
-      "name": "项目自动化",
-      "nodes": [
-        {"id": "node-2-1", "label": "auto-assign.yml", "description": "自动分配", "jobs": 1}
-      ]
-    },
-    {
-      "id": "layer-3",
-      "name": "代码质量检查",
-      "nodes": [
-        {"id": "node-3-1", "label": "pr-check.yml", "description": "PR检查", "jobs": 2}
-      ]
-    }
-  ],
-  "connections": [
-    {"source": "node-1-1", "target": "node-3-1"},
-    {"source": "node-1-2", "target": "node-2-1"}
+  "id": "layer-trigger",
+  "name": "触发入口",
+  "nodes": [
+    {"id": "trigger-push", "label": "push", "description": "代码推送触发"},
+    {"id": "trigger-pr", "label": "pull_request", "description": "PR事件触发"},
+    {"id": "trigger-schedule", "label": "schedule", "description": "定时触发"}
   ]
 }
-ARCHITECTURE_JSON -->
+```
+
+**注意**：
+- ✅ 节点label是触发类型（push、pull_request等），不是工作流名称
+- ✅ 节点id格式：trigger-{触发类型}
+- ❌ 不要把工作流名称（xxx.yml）放在触发层
+
+## JSON格式规范
 
 **JSON结构说明**：
 - layers: 架构层数组，按执行顺序排列
@@ -1181,17 +1223,23 @@ ARCHITECTURE_JSON -->
 - connections: 连接关系数组，体现调用关系
   - source: 源节点ID
   - target: 目标节点ID
-  - 规则：触发层节点→被触发的工作流节点，工作流节点→调用的脚本/外部系统
+  - 规则：
+    - 触发层节点 → 被触发的工作流节点
+    - 工作流节点 → 调用的脚本/外部系统
 
 ## 正确示例
 
-假设 Round 1 识别了以下阶段：
+假设项目有以下触发条件：
+- push
+- pull_request
+- schedule
+
+Round 1 识别了以下阶段：
 - 阶段一：触发入口
 - 阶段二：项目自动化
 - 阶段三：代码质量检查
-- 阶段四：测试验证
 
-则 JSON 应有 **4个 layer**：
+则 JSON 应有 **3个 layer**：
 
 <!-- ARCHITECTURE_JSON
 {
@@ -1201,7 +1249,8 @@ ARCHITECTURE_JSON -->
       "name": "触发入口",
       "nodes": [
         {"id": "trigger-push", "label": "push", "description": "代码推送触发"},
-        {"id": "trigger-pr", "label": "pull_request", "description": "PR事件触发"}
+        {"id": "trigger-pr", "label": "pull_request", "description": "PR事件触发"},
+        {"id": "trigger-schedule", "label": "schedule", "description": "定时触发"}
       ]
     },
     {
@@ -1216,43 +1265,61 @@ ARCHITECTURE_JSON -->
       "id": "layer-quality",
       "name": "代码质量检查",
       "nodes": [
-        {"id": "wf-pr-check", "label": "pr-check.yml", "description": "PR格式检查", "jobs": 2},
-        {"id": "wf-lint", "label": "lint.yml", "description": "代码风格检查", "jobs": 1}
-      ]
-    },
-    {
-      "id": "layer-test",
-      "name": "测试验证",
-      "nodes": [
-        {"id": "wf-test", "label": "test.yml", "description": "单元测试", "jobs": 3}
+        {"id": "wf-pr-check", "label": "pr-check.yml", "description": "PR格式检查", "jobs": 2}
       ]
     }
   ],
   "connections": [
     {"source": "trigger-pr", "target": "wf-pr-check"},
-    {"source": "trigger-pr", "target": "wf-test"}
+    {"source": "trigger-push", "target": "wf-auto-assign"}
   ]
 }
 ARCHITECTURE_JSON -->
 
 ## 错误示例
 
-❌ **错误**：将多个阶段合并为"工作流层"
+❌ **错误1**：触发层包含工作流节点
 
 <!-- ARCHITECTURE_JSON
 {
   "layers": [
     {
+      "id": "layer-1",
       "name": "触发入口",
-      "nodes": [...]
-    },
+      "nodes": [
+        {"id": "node-1-1", "label": "ci-workflow.yml", "description": "主CI流程", "jobs": 10}
+      ]
+    }
+  ]
+}
+ARCHITECTURE_JSON -->
+↑ 错误：触发层包含的是工作流节点，而不是触发类型节点
+
+❌ **错误2**：将多个阶段合并为"工作流层"
+
+<!-- ARCHITECTURE_JSON
+{
+  "layers": [
     {
-      "name": "工作流层",  // ❌ 错误：擅自合并了"项目自动化"、"代码质量检查"、"测试验证"三个阶段
+      "id": "layer-workflows",
+      "name": "工作流层",
       "nodes": [...]
     }
   ]
 }
 ARCHITECTURE_JSON -->
+↑ 错误：合并了多个阶段
+
+## 输出要求
+
+**必须输出**：
+1. 完整的JSON架构数据
+2. 包含所有触发类型节点
+3. connections从触发节点连接到工作流节点
+
+**禁止输出**：
+1. ASCII架构图
+2. 其他任何内容
 """
 
 

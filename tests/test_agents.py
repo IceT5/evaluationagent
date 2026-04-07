@@ -88,7 +88,6 @@ class TestCoreImports:
             route_after_loader,
             route_after_cicd,
             route_after_review,
-            should_skip_review,
             evaluate_quality,
         )
         assert route_after_input is not None

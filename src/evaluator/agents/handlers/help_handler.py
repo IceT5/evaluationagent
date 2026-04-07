@@ -83,13 +83,14 @@ class HelpHandlerAgent(BaseAgent):
         Returns:
             更新后的状态，包含 help_result
         """
-        params = state.get("params", {})
-        topic = params.get("topic")
-        
-        help_content = HELP_CONTENT
-        
-        if topic == "analyze":
-            help_content = """
+        try:
+            params = state.get("params", {})
+            topic = params.get("topic")
+            
+            help_content = HELP_CONTENT
+            
+            if topic == "analyze":
+                help_content = """
 ╭──────────────────────────────────────────────────────────────╮
 │  /analyze 命令                                               │
 ╰──────────────────────────────────────────────────────────────╯
@@ -106,8 +107,8 @@ class HelpHandlerAgent(BaseAgent):
   /analyze cicd ./my-project
   /analyze https://github.com/owner/repo
 """
-        elif topic == "compare":
-            help_content = """
+            elif topic == "compare":
+                help_content = """
 ╭──────────────────────────────────────────────────────────────╮
 │  /compare 命令                                                │
 ╰──────────────────────────────────────────────────────────────╯
@@ -128,12 +129,22 @@ class HelpHandlerAgent(BaseAgent):
   /compare project-a project-b
   /compare project-a project-b --dim complexity,best_practices
 """
-        
-        return {
-            **state,
-            "help_result": {
-                "content": help_content,
-                "topic": topic,
-            },
-            "completed_steps": state.get("completed_steps", []) + ["help_handler"],
-        }
+            
+            return {
+                **state,
+                "help_result": {
+                    "content": help_content,
+                    "topic": topic,
+                },
+                "completed_steps": state.get("completed_steps", []) + ["help_handler"],
+            }
+        except Exception as e:
+            return {
+                **state,
+                "help_result": {
+                    "success": False,
+                    "error": str(e),
+                },
+                "errors": state.get("errors", []) + [f"HelpHandlerAgent: {e}"],
+                "completed_steps": state.get("completed_steps", []) + ["help_handler"],
+            }

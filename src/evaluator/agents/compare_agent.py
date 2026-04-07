@@ -43,7 +43,7 @@ class CompareAgent(BaseAgent):
             name="CompareAgent",
             description="对比两个已分析项目的 CI/CD 架构",
             category="analysis",
-            inputs=["project_a", "project_b", "dimensions"],
+            inputs=["project_a", "project_b"],
             outputs=["comparison_result", "comparison_dir"],
             dependencies=[],
         )
@@ -59,6 +59,16 @@ class CompareAgent(BaseAgent):
         self.llm = llm
 
     def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            return self._run_impl(state)
+        except Exception as e:
+            return {
+                **state,
+                "comparison_result": None,
+                "errors": state.get("errors", []) + [f"CompareAgent: {e}"],
+            }
+    
+    def _run_impl(self, state: Dict[str, Any]) -> Dict[str, Any]:
         project_a = state.get("project_a")
         project_b = state.get("project_b")
         version_a = state.get("version_a")
@@ -101,10 +111,23 @@ class CompareAgent(BaseAgent):
                 "comparison_result": None,
             }
 
-        ci_data_a = data_a.get("ci_data", {})
-        ci_data_b = data_b.get("ci_data", {})
+        ci_data_a = data_a.get("ci_data") or {}
+        ci_data_b = data_b.get("ci_data") or {}
         metadata_a = data_a.get("metadata", {})
         metadata_b = data_b.get("metadata", {})
+        
+        if not ci_data_a:
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"{project_a} 的 CI/CD 数据不完整，请先完成分析"],
+                "comparison_result": None,
+            }
+        if not ci_data_b:
+            return {
+                **state,
+                "errors": state.get("errors", []) + [f"{project_b} 的 CI/CD 数据不完整，请先完成分析"],
+                "comparison_result": None,
+            }
 
         metrics_a = self.calculator.calculate_all(ci_data_a)
         metrics_b = self.calculator.calculate_all(ci_data_b)

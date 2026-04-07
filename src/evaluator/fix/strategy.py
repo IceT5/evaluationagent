@@ -195,7 +195,7 @@ class MultiFileSync:
         if fix_type == "trigger_missing":
             arch = self._add_trigger_node(arch, sync_data)
         elif fix_type == "trigger_fabricated":
-            arch = self._remove_trigger_node(arch, sync_data)
+            arch = self._remove_trigger_connection(arch, sync_data)
         elif fix_type == "job_missing":
             arch = self._add_job_node(arch, sync_data)
         elif fix_type == "job_fake":
@@ -209,42 +209,96 @@ class MultiFileSync:
         return arch, summary
     
     def _add_trigger_node(self, arch: Dict, sync_data: Dict) -> Dict:
-        """添加触发节点"""
+        """添加触发节点和连线
+        
+        场景：trigger_missing - 工作流的触发条件未在报告中提及
+        修复：
+        1. 添加触发节点到触发层（如果不存在）
+        2. 添加连线：trigger-{trigger} -> wf-{workflow}
+        """
         trigger = sync_data.get("entity", "")
+        workflow = sync_data.get("workflow", "")
+        
         if not trigger:
             return arch
         
         layers = arch.get("layers", [])
         trigger_layer = None
         
+        # 1. 找到触发层
         for layer in layers:
             if "触发" in layer.get("name", "") or "入口" in layer.get("name", ""):
                 trigger_layer = layer
                 break
         
+        # 2. 添加触发节点（如果不存在）
         if trigger_layer:
             existing = {n.get("label", "").split(" ")[0] for n in trigger_layer.get("nodes", [])}
             if trigger not in existing:
                 trigger_layer.setdefault("nodes", []).append({
-                    "id": f"node-trigger-{trigger}",
+                    "id": f"trigger-{trigger}",
                     "label": trigger,
                     "description": f"{trigger} 事件触发",
                 })
         
+        # 3. 添加连线
+        if workflow:
+            trigger_id = f"trigger-{trigger}"
+            wf_id = self._find_workflow_node_id(arch, workflow)
+            
+            if wf_id:
+                connections = arch.setdefault("connections", [])
+                existing_conn = {(c.get("source"), c.get("target")) for c in connections}
+                if (trigger_id, wf_id) not in existing_conn:
+                    connections.append({
+                        "source": trigger_id,
+                        "target": wf_id,
+                    })
+        
         return arch
     
-    def _remove_trigger_node(self, arch: Dict, sync_data: Dict) -> Dict:
-        """移除触发节点"""
+    def _remove_trigger_connection(self, arch: Dict, sync_data: Dict) -> Dict:
+        """删除工作流到触发节点的连线（trigger_fabricated）
+        
+        场景：工作流虚构了触发条件，应该删除连线，保留触发节点
+        原因：触发节点可能被其他工作流使用
+        """
         trigger = sync_data.get("entity", "")
-        if not trigger:
+        workflow = sync_data.get("workflow", "")
+        
+        if not trigger or not workflow:
             return arch
         
-        for layer in arch.get("layers", []):
-            if "触发" in layer.get("name", "") or "入口" in layer.get("name", ""):
-                nodes = layer.get("nodes", [])
-                layer["nodes"] = [n for n in nodes if not n.get("label", "").startswith(trigger)]
+        trigger_id = self._find_trigger_node_id(arch, trigger)
+        wf_id = self._find_workflow_node_id(arch, workflow)
+        
+        if trigger_id and wf_id:
+            connections = arch.get("connections", [])
+            arch["connections"] = [
+                c for c in connections 
+                if not (c.get("source") == trigger_id and c.get("target") == wf_id)
+            ]
         
         return arch
+    
+    def _find_trigger_node_id(self, arch: Dict, trigger: str) -> str:
+        """查找触发节点ID"""
+        for layer in arch.get("layers", []):
+            if "触发" in layer.get("name", "") or "入口" in layer.get("name", ""):
+                for node in layer.get("nodes", []):
+                    label = node.get("label", "")
+                    if label == trigger or label.startswith(trigger):
+                        return node.get("id", "")
+        return ""
+    
+    def _find_workflow_node_id(self, arch: Dict, workflow: str) -> str:
+        """查找工作流节点ID"""
+        for layer in arch.get("layers", []):
+            for node in layer.get("nodes", []):
+                label = node.get("label", "")
+                if label == workflow or label.endswith(workflow):
+                    return node.get("id", "")
+        return ""
     
     def _add_job_node(self, arch: Dict, sync_data: Dict) -> Dict:
         """添加 Job 节点"""
