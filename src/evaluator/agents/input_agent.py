@@ -1,109 +1,93 @@
 """Input Agent - 交互式获取用户输入"""
 from pathlib import Path
+from typing import Any, Dict, List
 from evaluator.skills import UrlParser
+from .base_agent import BaseAgent, AgentMeta
 
 
-class InputAgent:
+class InputAgent(BaseAgent):
     """输入处理 Agent"""
 
-    def __init__(self, user_input: str | None = None):
-        """
-        Args:
-            user_input: 可选，直接传入输入（用于测试或程序化调用）
-        """
-        self.user_input = user_input
+    @classmethod
+    def describe(cls) -> AgentMeta:
+        return AgentMeta(
+            name="InputAgent",
+            description="解析用户输入（路径或URL），判断输入类型",
+            category="entry",
+            inputs=["user_input", "params"],
+            outputs=["project_name", "project_path", "project_url", "should_download"],
+            dependencies=[],
+        )
 
-    def run(self, state: dict) -> dict:
-        """
-        职责：
-        1. 获取用户输入（项目路径或 URL）
-        2. 判断输入类型
-        3. 更新状态
+    def __init__(self):
+        super().__init__()
 
-        Returns:
-            更新后的状态片段
-        """
-        print("\n" + "=" * 50)
-        print("  开源项目工程能力评估器")
-        print("=" * 50)
+    def run(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        user_input = state.get("user_input") or state.get("params", {}).get("project") or ""
 
-        # 获取输入
-        if self.user_input:
-            user_input = self.user_input
-        else:
-            print("\n请输入项目路径或代码仓库地址：")
-            print("  示例：")
-            print("    - 本地路径: F:/projects/my-project")
-            print("    - GitHub:   https://github.com/owner/repo")
-            print("    - GitLab:   https://gitlab.com/owner/repo")
-            print()
-            user_input = input(">>> ").strip()
-
-        # 去除引号（用户可能复制路径时带了引号）
         user_input = user_input.strip("\"'").strip()
 
         if not user_input:
             return {
+                **state,
                 "current_step": "input",
-                "errors": ["输入不能为空"],
+                "errors": state.get("errors", []) + ["输入不能为空"],
             }
 
-        # 判断是 URL 还是本地路径
         if UrlParser.is_url(user_input):
-            return self._handle_url(user_input)
+            return self._handle_url(user_input, state)
         else:
-            return self._handle_local_path(user_input)
+            return self._handle_local_path(user_input, state)
 
-    def _handle_url(self, url: str) -> dict:
-        """处理 URL 输入"""
-        print(f"\n检测到代码仓库地址: {url}")
-
-        # 解析 URL
+    def _handle_url(self, url: str, state: Dict[str, Any]) -> Dict[str, Any]:
         parsed = UrlParser.parse(url)
         project_name = UrlParser.get_project_name(parsed)
 
-        print(f"  平台: {parsed['platform']}")
-        print(f"  项目: {project_name}")
-
         return {
+            **state,
             "user_input": url,
             "project_url": url,
             "project_name": project_name,
             "should_download": True,
             "current_step": "input",
-            "errors": [],
         }
 
-    def _handle_local_path(self, path: str) -> dict:
-        """处理本地路径输入"""
+    def _handle_local_path(self, path: str, state: Dict[str, Any]) -> Dict[str, Any]:
         project_path = Path(path).resolve()
+        errors = []
 
         if not project_path.exists():
+            errors.append(f"路径不存在: {project_path}")
             return {
+                **state,
                 "user_input": path,
                 "project_path": None,
+                "project_url": None,
                 "should_download": False,
                 "current_step": "input",
-                "errors": [f"路径不存在: {project_path}"],
+                "errors": state.get("errors", []) + errors,
             }
 
         if not project_path.is_dir():
+            errors.append(f"路径不是目录: {project_path}")
             return {
+                **state,
                 "user_input": path,
                 "project_path": None,
+                "project_url": None,
                 "should_download": False,
                 "current_step": "input",
-                "errors": [f"路径不是目录: {project_path}"],
+                "errors": state.get("errors", []) + errors,
             }
 
-        print(f"\n检测到本地项目: {project_path}")
         project_name = project_path.name
 
         return {
+            **state,
             "user_input": path,
             "project_path": str(project_path),
             "project_name": project_name,
+            "project_url": None,
             "should_download": False,
             "current_step": "input",
-            "errors": [],
         }

@@ -2,6 +2,13 @@
 import subprocess
 from pathlib import Path
 
+try:
+    from evaluator.config import config
+    HAS_CONFIG = True
+except ImportError:
+    HAS_CONFIG = False
+    config = None
+
 
 class GitOperations:
     """Git 相关操作"""
@@ -47,12 +54,14 @@ class GitOperations:
         try:
             print(f"正在克隆: {url}")
             print(f"目标目录: {target_path}")
-
+            
+            timeout = config.git_clone_timeout if config and HAS_CONFIG else 300
+            
             result = subprocess.run(
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=300,  # 5分钟超时
+                timeout=timeout,
             )
 
             if result.returncode == 0:

@@ -1,8 +1,45 @@
 """LLM 客户端 - Agent 的核心组件"""
 import os
-from typing import Optional
+import time
+import logging
+from typing import Optional, List, Dict, Any, Tuple
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_core.callbacks import BaseCallbackHandler
+import httpx
+
+from evaluator.llm.tracing import traceable_llm
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "glm-4")
+
+
+class LLMCallbackHandler(BaseCallbackHandler):
+    """LLM 调用回调处理器 - 用于可观测性"""
+    
+    def __init__(self, agent_name: str = "LLMClient"):
+        self.agent_name = agent_name
+        self._start_time: Optional[float] = None
+        self._token_count: int = 0
+    
+    def on_llm_start(self, serialized: Dict, prompts: List[str], **kwargs):
+        self._start_time = time.time()
+        logger.debug(f"[{self.agent_name}] LLM 开始调用")
+    
+    def on_llm_end(self, response, **kwargs):
+        duration = time.time() - self._start_time if self._start_time else 0
+        try:
+            token_usage = response.response_metadata.get("token_usage", {})
+            prompt_tokens = token_usage.get("prompt_tokens", 0)
+            completion_tokens = token_usage.get("completion_tokens", 0)
+            total_tokens = token_usage.get("total_tokens", 0)
+            logger.debug(f"[{self.agent_name}] LLM 调用完成: {duration:.2f}s, tokens: {total_tokens}")
+        except Exception:
+            logger.debug(f"[{self.agent_name}] LLM 调用完成: {duration:.2f}s")
+    
+    def on_llm_error(self, error: BaseException, **kwargs):
+        logger.error(f"[{self.agent_name}] LLM 调用错误: {error}")
 
 
 class LLMClient:
@@ -16,12 +53,15 @@ class LLMClient:
     def __init__(
         self,
         provider: str = "openai",
-        model: str = "gpt-4o-mini",
+        model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
         temperature: float = 0.7,
         max_tokens: Optional[int] = None,
     ):
+        # 如果没有指定模型，从环境变量读取
+        if model is None:
+            model = os.getenv("DEFAULT_MODEL", "glm-4")
         """
         初始化 LLM 客户端
         
@@ -48,18 +88,53 @@ class LLMClient:
             )
         
         # 创建 LangChain ChatOpenAI 实例
+        self._callback_handler = LLMCallbackHandler(self.__class__.__name__)
+        
+        try:
+            from evaluator.config import config
+            has_config = True
+        except ImportError:
+            has_config = False
+        
+        request_timeout = config.llm_request_timeout if has_config else 300
+        default_max_tokens = config.llm_max_tokens if has_config else 131072
+        
+        # 创建可取消的 HTTP 客户端
+        self._httpx_client = httpx.Client(timeout=httpx.Timeout(request_timeout))
+        
         client_kwargs = {
             "model": model,
             "api_key": self.api_key,
             "base_url": self.base_url,
             "temperature": temperature,
+            "request_timeout": request_timeout,
+            "callbacks": [self._callback_handler],
+            "http_client": self._httpx_client,
         }
-        
-        # 设置 max_tokens：None 时使用 131072（128K），确保不会被截断
-        client_kwargs["max_tokens"] = max_tokens if max_tokens is not None else 131072
+        client_kwargs["max_tokens"] = max_tokens if max_tokens is not None else default_max_tokens
         
         self._client = ChatOpenAI(**client_kwargs)
+        
+        # 注册中断回调
+        self._register_interrupt_callback()
     
+    def _register_interrupt_callback(self):
+        """注册中断回调，用于关闭 HTTP 连接"""
+        try:
+            from evaluator.core.interrupt import interrupt_controller, InterruptException
+            self._InterruptException = InterruptException
+            interrupt_controller.register_callback(self._cancel)
+        except ImportError:
+            self._InterruptException = Exception
+    
+    def _cancel(self):
+        """中断回调：关闭 HTTP 连接"""
+        try:
+            self._httpx_client.close()
+        except Exception:
+            pass
+    
+    @traceable_llm("chat")
     def chat(
         self,
         prompt: str,
@@ -90,6 +165,10 @@ class LLMClient:
             elif isinstance(content, list):
                 return "".join(str(item) for item in content)
             return str(content)
+        except (httpx.StreamClosed, httpx.CloseError, httpx.ProtocolError):
+            raise self._InterruptException("LLM 请求已取消")
+        except self._InterruptException:
+            raise
         except Exception as e:
             raise RuntimeError(f"LLM 调用失败: {e}")
     
@@ -135,6 +214,109 @@ class LLMClient:
         full_prompt = f"上下文信息:\n{context_str}\n\n{prompt}"
         
         return self.chat(full_prompt, system_prompt)
+    
+    @traceable_llm("chat_multi_round")
+    def chat_multi_round(
+        self,
+        rounds: List[str],
+        system_prompt: Optional[str] = None,
+        timeout: int = 300,
+    ) -> Tuple[List[str], List[str]]:
+        """
+        多轮对话
+        
+        Args:
+            rounds: 每轮的 user message 列表
+            system_prompt: 系统提示（可选）
+            timeout: 单轮超时时间（秒）
+        
+        Returns:
+            Tuple[List[str], List[str]]: (每轮的响应列表, 每轮的耗时列表)
+        
+        Raises:
+            RuntimeError: 对话失败
+        """
+        messages = []
+        
+        if system_prompt:
+            messages.append(SystemMessage(content=system_prompt))
+        
+        responses = []
+        durations = []
+        
+        for i, user_message in enumerate(rounds):
+            messages.append(HumanMessage(content=user_message))
+            
+            try:
+                start_time = time.time()
+                response = self._invoke_with_timeout(messages, timeout)
+                duration = time.time() - start_time
+                
+                content = response.content
+                if isinstance(content, str):
+                    response_text = content
+                elif isinstance(content, list):
+                    response_text = "".join(str(item) for item in content)
+                else:
+                    response_text = str(content)
+                
+                messages.append(AIMessage(content=response_text))
+                responses.append(response_text)
+                durations.append(f"{duration:.1f}s")
+                
+            except self._InterruptException:
+                raise
+            except (httpx.StreamClosed, httpx.CloseError, httpx.ProtocolError):
+                raise self._InterruptException("LLM 请求已取消")
+            except Exception as e:
+                raise RuntimeError(f"多轮对话第 {i+1}/{len(rounds)} 轮失败: {e}")
+        
+        return responses, durations
+    
+    def _invoke_with_timeout(
+        self,
+        messages: List,
+        timeout: int = 300,
+    ) -> Any:
+        """
+        带超时的 LLM 调用
+        
+        Args:
+            messages: 消息列表
+            timeout: 超时时间（秒）
+        
+        Returns:
+            LLM 响应
+        
+        Raises:
+            TimeoutError: 调用超时
+            RuntimeError: 调用失败
+        """
+        import threading
+        
+        result = {"response": None, "error": None}
+        
+        def invoke():
+            try:
+                result["response"] = self._client.invoke(messages)
+            except Exception as e:
+                result["error"] = e
+        
+        thread = threading.Thread(target=invoke)
+        thread.daemon = True
+        thread.start()
+        thread.join(timeout=timeout)
+        
+        if thread.is_alive():
+            raise TimeoutError(f"LLM 调用超时 ({timeout}s)")
+        
+        if result["error"]:
+            raise RuntimeError(f"LLM 调用失败: {result['error']}")
+        
+        if result["response"] is None:
+            raise RuntimeError("LLM 调用未返回结果")
+        
+        return result["response"]
 
 
 # 默认客户端实例（延迟初始化）

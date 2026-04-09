@@ -17,6 +17,11 @@ from dataclasses import dataclass, field, asdict
 import sys
 
 
+# 文件类型定义
+SCRIPT_EXTS = {'.py', '.sh', '.ps1', '.bat', '.groovy', '.jl', '.rb', '.pl'}
+CONFIG_EXTS = {'.yaml', '.yml', '.json'}
+
+
 @dataclass
 class StepData:
     """Detailed step data."""
@@ -572,7 +577,13 @@ class CIDataExtractor:
             return None
     
     def _extract_scripts(self, ci_dirs: Dict[str, Path]) -> Tuple[List[ScriptData], Dict[str, List[str]]]:
-        """Extract script information with directory mapping and nested call tracking."""
+        """Extract script information with directory mapping and nested call tracking.
+        
+        根据目录类型应用不同的提取策略：
+        - tests 目录：只提取 README.md 内容，其他文件只记录结构
+        - scripts 目录：提取 README.md + 脚本文件 + 配置文件，其他文件只记录结构
+        - 其他目录：保持原有逻辑（全部提取）
+        """
         scripts = []
         scripts_by_dir = defaultdict(list)
         seen = {}  # name -> ScriptData (for lookup)
@@ -582,53 +593,97 @@ class CIDataExtractor:
             if not isinstance(path, Path) or not path.exists():
                 continue
             
-            for ext in ["*.sh", "*.py", "*.ps1", "*.bat"]:
-                for f in path.rglob(ext):
-                    if f.name not in seen:
-                        try:
-                            with open(f, "r", encoding="utf-8", errors="ignore") as fp:
-                                content = fp.read()
-                            
-                            # Extract functions and imports
-                            functions = []
-                            imports = []
-                            if f.suffix == ".py":
-                                func_pattern = r'^def\s+(\w+)\s*\('
-                                functions = re.findall(func_pattern, content, re.MULTILINE)
-                                import_pattern = r'^(?:import|from)\s+(\S+)'
-                                imports = re.findall(import_pattern, content, re.MULTILINE)
-                            elif f.suffix == ".sh":
-                                func_pattern = r'^(?:function\s+)?(\w+)\s*\(\s*\)\s*\{'
-                                functions = re.findall(func_pattern, content, re.MULTILINE)
-                            
-                            script = ScriptData(
-                                name=f.name,
-                                path=str(f.relative_to(self.repo_path)),
-                                type=f.suffix,
-                                content=content,  # No truncation, keep full content
-                                functions=functions,
-                                imports=imports
-                            )
-                            scripts.append(script)
-                            seen[f.name] = script
-                            script_paths[f.name] = f
-                            
-                            # Map to directory
-                            rel_dir = str(f.parent.relative_to(self.repo_path))
-                            scripts_by_dir[rel_dir].append(f.name)
-                            
-                        except Exception as e:
-                            pass
+            # 判断目录类型
+            is_tests = dir_key in ["tests", "test"]
+            is_scripts = dir_key == "scripts"
+            
+            for f in path.rglob("*"):
+                if not f.is_file():
+                    continue
+                
+                # Use relative path as key to avoid same-name files in different directories
+                rel_path = str(f.relative_to(self.repo_path))
+                if rel_path in seen:
+                    continue
+                
+                path_str = str(f).replace("\\", "/")
+                # Skip workflow files (they are already parsed separately)
+                if ".github/workflows/" in path_str and f.suffix in [".yaml", ".yml"]:
+                    continue
+                
+                if f.stat().st_size > 1024 * 1024:
+                    continue
+                
+                # 判断文件类型
+                is_readme = f.name.lower() == "readme.md"
+                is_script = f.suffix in SCRIPT_EXTS
+                is_config = f.suffix in CONFIG_EXTS
+                
+                # 根据目录类型决定是否读取内容
+                include_content = True
+                
+                if is_tests:
+                    # tests 目录：只提取 README.md 内容
+                    include_content = is_readme
+                elif is_scripts:
+                    # scripts 目录：提取 README.md + 脚本 + 配置
+                    include_content = is_readme or is_script or is_config
+                # 其他目录：保持原有逻辑（全部提取）
+                
+                try:
+                    if include_content:
+                        with open(f, "r", encoding="utf-8", errors="ignore") as fp:
+                            content = fp.read()
+                        
+                        if "\x00" in content:
+                            continue
+                    else:
+                        content = ""
+                    
+                    functions = []
+                    imports = []
+                    if include_content:
+                        if f.suffix == ".py":
+                            func_pattern = r'^def\s+(\w+)\s*\('
+                            functions = re.findall(func_pattern, content, re.MULTILINE)
+                            import_pattern = r'^(?:import|from)\s+(\S+)'
+                            imports = re.findall(import_pattern, content, re.MULTILINE)
+                        elif f.suffix == ".sh":
+                            func_pattern = r'^(?:function\s+)?(\w+)\s*\(\s*\)\s*\{'
+                            functions = re.findall(func_pattern, content, re.MULTILINE)
+                    
+                    script = ScriptData(
+                        name=f.name,
+                        path=rel_path,
+                        type=f.suffix,
+                        content=content,
+                        functions=functions,
+                        imports=imports
+                    )
+                    scripts.append(script)
+                    seen[rel_path] = script
+                    script_paths[f.name] = f
+                    
+                    rel_dir = str(f.parent.relative_to(self.repo_path))
+                    scripts_by_dir[rel_dir].append(f.name)
+                    
+                except Exception:
+                    pass
         
-        # Now analyze nested script calls
         self._analyze_script_calls(scripts, script_paths)
         
-        return scripts, dict(scripts_by_dir)  # No limit on scripts
+        return scripts, dict(scripts_by_dir)
     
     def _analyze_script_calls(self, scripts: List[ScriptData], script_paths: Dict[str, Path]):
         """Analyze nested script calls within each script."""
         script_names = set(script_paths.keys())
         
+        # Phase 1: Extract variable definitions that contain script names
+        var_to_scripts = {}  # script_name -> {var_name: [script_names]}
+        for script in scripts:
+            var_to_scripts[script.name] = self._extract_script_variables(script)
+        
+        # Phase 2: Analyze direct and variable-based script calls
         for script in scripts:
             content = script.content
             lines = content.split('\n')
@@ -781,6 +836,114 @@ class CIDataExtractor:
             
             # Remove duplicates
             script.calls_scripts = list(set(script.calls_scripts))
+            
+            # Phase 3: Analyze variable-based script calls
+            self._analyze_variable_calls(script, var_to_scripts.get(script.name, {}), script_names)
+    
+    def _extract_script_variables(self, script: ScriptData) -> Dict[str, List[str]]:
+        """Extract variable definitions that contain script names (generic)."""
+        var_to_scripts = {}
+        content = script.content
+        
+        if script.type == ".sh":
+            # Match variable definition lines
+            var_def_pattern = r'(\w+)=(.+)'
+            
+            for match in re.finditer(var_def_pattern, content):
+                var_name = match.group(1)
+                def_value = match.group(2)
+                
+                # Skip if not a valid variable name
+                if not var_name or var_name.startswith('_'):
+                    continue
+                
+                script_refs = []
+                
+                # Pattern 1: Direct script file reference (var="script.sh")
+                direct_refs = re.findall(r'["\']([^"\']+\.(?:sh|py))["\']', def_value)
+                script_refs.extend(direct_refs)
+                
+                # Pattern 2: Script file in command substitution (var=$(...script.sh...))
+                cmd_subst_refs = re.findall(r'\$\([^)]*([^)\s"\']+\.(?:sh|py))[^)]*\)', def_value)
+                script_refs.extend(cmd_subst_refs)
+                
+                # Pattern 3: sed replacement pattern (sed 's/old.sh/new.sh/' or sed "s/old.sh/new.sh/")
+                # This is a generic pattern for sed substitution
+                sed_patterns = [
+                    r"sed\s+['\"]s/[^/]+/([^/]+)/['\"]",
+                    r"sed\s+['\"]s/[^/]+/([^/]+)/g['\"]",
+                ]
+                for sed_pat in sed_patterns:
+                    for sed_match in re.finditer(sed_pat, def_value):
+                        replacement = sed_match.group(1)
+                        if replacement.endswith(('.sh', '.py')):
+                            script_refs.append(replacement)
+                
+                # Build mapping
+                if script_refs:
+                    if var_name not in var_to_scripts:
+                        var_to_scripts[var_name] = []
+                    for script_ref in script_refs:
+                        script_name = Path(script_ref).name
+                        if script_name not in var_to_scripts[var_name]:
+                            var_to_scripts[var_name].append(script_name)
+        
+        elif script.type == ".py":
+            # Python variable definitions (generic patterns)
+            # var = "script.sh", var = os.path.join(dir, "script.sh")
+            patterns = [
+                r'(\w+)\s*=\s*["\']([^"\']+\.(?:sh|py))["\']',
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, content):
+                    var_name = match.group(1)
+                    script_ref = match.group(2)
+                    script_name = Path(script_ref).name
+                    if var_name not in var_to_scripts:
+                        var_to_scripts[var_name] = []
+                    if script_name not in var_to_scripts[var_name]:
+                        var_to_scripts[var_name].append(script_name)
+        
+        return var_to_scripts
+    
+    def _analyze_variable_calls(self, script: ScriptData, var_to_scripts: Dict[str, List[str]], script_names: Set[str]):
+        """Analyze variable-based script calls (generic)."""
+        if not var_to_scripts:
+            return
+        
+        content = script.content
+        
+        if script.type == ".sh":
+            # Shell variable references (generic patterns)
+            # source "$var", . "$var", bash "$var"
+            patterns = [
+                r'(?:source|\.)\s+["\']?\$(\w+)',
+                r'(?:bash|sh)\s+["\']?\$(\w+)',
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, content):
+                    var_name = match.group(1)
+                    if var_name in var_to_scripts:
+                        for called_script in var_to_scripts[var_name]:
+                            if called_script in script_names and called_script != script.name:
+                                if called_script not in script.calls_scripts:
+                                    script.calls_scripts.append(called_script)
+        
+        elif script.type == ".py":
+            # Python variable references (generic patterns)
+            # subprocess.run([var]), os.system(var)
+            patterns = [
+                r'subprocess\.(?:run|call|Popen)\s*\(\s*["\']?\$(\w+)',
+                r'os\.system\s*\(\s*["\']?\$(\w+)',
+            ]
+            for pattern in patterns:
+                for match in re.finditer(pattern, content):
+                    var_name = match.group(1)
+                    if var_name in var_to_scripts:
+                        for called_script in var_to_scripts[var_name]:
+                            if called_script in script_names and called_script != script.name:
+                                if called_script not in script.calls_scripts:
+                                    script.calls_scripts.append(called_script)
     
     def _extract_pre_commit_configs(self) -> List[PreCommitConfigData]:
         """Extract pre-commit configuration from .pre-commit-config.yaml files."""
@@ -952,6 +1115,39 @@ class CIDataExtractor:
                 
             except Exception as e:
                 print(f"Error parsing CI config {config_path}: {e}", file=sys.stderr)
+        
+        # 通配识别 ci/ 和 .ci/ 目录下的自定义配置文件
+        for dir_name in ["ci", ".ci"]:
+            dir_path = self.repo_path / dir_name
+            if not dir_path.exists():
+                continue
+            
+            for ext in ["*.yaml", "*.yml"]:
+                for config_file in dir_path.glob(ext):
+                    # 排除已处理的标准配置
+                    if config_file.name in ["config.yml", "config.yaml", "pipeline.yml", "pipeline.yaml"]:
+                        continue
+                    
+                    try:
+                        with open(config_file, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read()
+                        
+                        parsed_data = {}
+                        try:
+                            parsed_data = yaml.safe_load(content) or {}
+                        except:
+                            pass
+                        
+                        config = OtherCIConfigData(
+                            system="custom_ci",
+                            path=str(config_file.relative_to(self.repo_path)),
+                            content=content,
+                            parsed_data=parsed_data
+                        )
+                        configs.append(config)
+                        
+                    except Exception as e:
+                        print(f"Error parsing custom CI config {config_file}: {e}", file=sys.stderr)
         
         return configs
     
@@ -1176,18 +1372,341 @@ class CIDataExtractor:
                         break
         
         # Also check Jenkins pipelines for script references
+        script_names = {s.name: s for s in data.scripts}
         for pipeline in data.jenkins_pipelines:
             content = pipeline.get("content", "")
-            # Find script references in Groovy
+            pipeline_name = pipeline["name"]
+            
+            # Find script references in Groovy using multiple patterns
+            # Pattern 1: Direct script file references in strings
+            script_refs = set()
+            script_ref_patterns = [
+                r'["\']([^"\']+\.(?:sh|py|ps1|bat))["\']',
+                r'sh\s*\(["\']([^"\']+)["\']',
+                r'bat\s*\(["\']([^"\']+)["\']',
+            ]
+            for pattern in script_ref_patterns:
+                for match in re.finditer(pattern, content):
+                    script_ref = match.group(1)
+                    script_refs.add(Path(script_ref).name)
+            
+            # Pattern 2: Check script name/path in content (fallback)
             for script in data.scripts:
                 if script.name in content or script.path in content:
-                    data.external_ci_scripts.append({
-                        "name": script.name,
-                        "path": script.path,
-                        "type": script.type,
-                        "likely_called_by": f"jenkins:{pipeline['name']}",
-                        "indicator": "jenkins_reference",
-                    })
+                    script_refs.add(script.name)
+            
+            # Update called_by and external_ci_scripts
+            for script_name in script_refs:
+                if script_name in script_names:
+                    script = script_names[script_name]
+                    jenkins_ref = f"jenkins:{pipeline_name}"
+                    
+                    # Update called_by
+                    if jenkins_ref not in script.called_by:
+                        script.called_by.append(jenkins_ref)
+                    
+                    # Add to external_ci_scripts if not already there
+                    existing = any(
+                        e.get("name") == script.name and e.get("likely_called_by") == jenkins_ref
+                        for e in data.external_ci_scripts
+                    )
+                    if not existing:
+                        data.external_ci_scripts.append({
+                            "name": script.name,
+                            "path": script.path,
+                            "type": script.type,
+                            "likely_called_by": jenkins_ref,
+                            "indicator": "jenkins_reference",
+                        })
+        
+        # Phase 3: Identify workflow → external CI → Jenkins call chain
+        self._link_workflows_to_jenkins(data)
+        
+        # Phase 4: Extract Jenkins info from other_ci_configs
+        self._extract_jenkins_from_configs(data)
+        
+        # Phase 5: Extract file references from Action inputs
+        self._link_actions_to_files(data)
+    
+    def _link_actions_to_files(self, data: CIData):
+        """Link Actions to files via input parameters (generic)."""
+        # Build action map
+        action_map = {a.name: a for a in data.actions}
+        script_names = {s.name: s for s in data.scripts}
+        
+        # Build action.yml content map from scripts
+        action_yml_map = {}  # action_name -> action.yml content
+        for script in data.scripts:
+            if script.name == "action.yml" or script.name == "action.yaml":
+                # Extract action name from path
+                path = script.path.replace("\\", "/")
+                if ".github/actions/" in path:
+                    parts = path.split("/")
+                    try:
+                        idx = parts.index("actions")
+                        if idx + 1 < len(parts):
+                            action_name = parts[idx + 1]
+                            action_yml_map[action_name] = script.content
+                    except ValueError:
+                        pass
+        
+        # Extract file paths from action inputs
+        action_input_files = {}  # action_name -> {input_name: file_path}
+        for action_name, yml_content in action_yml_map.items():
+            input_files = self._extract_action_input_files_from_content(yml_content)
+            if input_files:
+                action_input_files[action_name] = input_files
+        
+        # Link workflows to files via actions
+        for wf_name, wf in data.workflows.items():
+            for job_name, job in wf.jobs.items():
+                for step in job.steps:
+                    uses = step.uses
+                    if not uses:
+                        continue
+                    
+                    # Extract action name from uses
+                    action_name = None
+                    if uses.startswith("./.github/actions/"):
+                        action_name = uses.replace("./.github/actions/", "").split("@")[0]
+                    elif uses.startswith("./"):
+                        action_name = uses[2:].split("@")[0]
+                    
+                    if not action_name or action_name not in action_input_files:
+                        continue
+                    
+                    # Get actual file paths (considering with_params override)
+                    with_params = step.with_params or {}
+                    actual_files = self._get_actual_file_paths(
+                        action_input_files[action_name], with_params
+                    )
+                    
+                    # Update called_by for scripts
+                    workflow_ref = f"{wf_name}::{job_name}"
+                    for input_name, file_path in actual_files.items():
+                        file_name = Path(file_path).name
+                        if file_name in script_names:
+                            script = script_names[file_name]
+                            action_ref = f"action:{action_name}"
+                            if action_ref not in script.called_by:
+                                script.called_by.append(action_ref)
+                            if workflow_ref not in script.called_by:
+                                script.called_by.append(workflow_ref)
+    
+    def _extract_action_input_files_from_content(self, yml_content: str) -> Dict[str, str]:
+        """Extract file paths from action.yml content (generic)."""
+        input_files = {}
+        
+        if not yml_content:
+            return input_files
+        
+        # Parse action.yml
+        try:
+            action_def = yaml.safe_load(yml_content)
+            inputs = action_def.get('inputs', {})
+            
+            for input_name, input_def in inputs.items():
+                if not isinstance(input_def, dict):
+                    continue
+                
+                default_value = input_def.get('default', '')
+                if self._is_likely_file_path(default_value):
+                    input_files[input_name] = default_value
+        except Exception:
+            pass
+        
+        return input_files
+    
+    def _is_likely_file_path(self, value: str) -> bool:
+        """Check if a value is likely a file path (generic)."""
+        if not value or not isinstance(value, str):
+            return False
+        
+        # Filter out obvious non-file values
+        if value.startswith('/'):  # Absolute path
+            return False
+        if value.startswith('$'):  # Variable reference
+            return False
+        if value.startswith('{{'):  # Template reference
+            return False
+        if value.lower() in ['true', 'false', 'yes', 'no', 'on', 'off']:
+            return False
+        if re.match(r'^v?\d+\.\d+', value):  # Version number (v1.0, 3.10)
+            return False
+        if re.match(r'^\d+$', value):  # Pure number
+            return False
+        
+        # Must end with file suffix
+        file_suffixes = ['.yaml', '.yml', '.json', '.sh', '.py', '.toml', '.ini', '.properties']
+        if not any(value.endswith(suffix) for suffix in file_suffixes):
+            return False
+        
+        return True
+    
+    def _get_actual_file_paths(self, action_input_files: Dict[str, str], with_params: Dict[str, Any]) -> Dict[str, str]:
+        """Get actual file paths considering with_params override (generic)."""
+        actual_files = {}
+        
+        for input_name, default_path in action_input_files.items():
+            # If workflow specified this parameter, use the specified value
+            if input_name in with_params:
+                actual_value = str(with_params[input_name])
+                if self._is_likely_file_path(actual_value):
+                    actual_files[input_name] = actual_value
+            else:
+                # Otherwise use default value
+                actual_files[input_name] = default_path
+        
+        return actual_files
+    
+    def _link_workflows_to_jenkins(self, data: CIData):
+        """Link workflows to Jenkins pipelines (generic)."""
+        # Standard GitHub runners
+        standard_runners = [
+            "ubuntu-latest", "ubuntu-22.04", "ubuntu-20.04",
+            "macos-latest", "macos-12", "macos-11",
+            "windows-latest", "windows-2022", "windows-2019",
+        ]
+        
+        # Find workflows that call external CI
+        for wf_name, wf in data.workflows.items():
+            for job_name, job in wf.jobs.items():
+                # Check if job uses non-standard runner (likely external CI)
+                if job.runs_on and job.runs_on not in standard_runners:
+                    self._link_job_to_jenkins(data, wf_name, job_name)
+                    continue
+                
+                # Check steps for external CI calls
+                for step in job.steps:
+                    if self._is_external_ci_step(step):
+                        self._link_job_to_jenkins(data, wf_name, job_name)
+                        break
+    
+    def _is_external_ci_step(self, step: StepData) -> bool:
+        """Check if a step calls external CI (generic)."""
+        # Check uses: external action (not actions/* or local ./*)
+        if step.uses:
+            if not step.uses.startswith("actions/") and not step.uses.startswith("./"):
+                return True
+        
+        # Check run: contains CI-related keywords
+        if step.run:
+            ci_keywords = ["ci", "jenkins", "pipeline", "trigger", "build-server"]
+            run_lower = step.run.lower()
+            for keyword in ci_keywords:
+                if keyword in run_lower:
+                    # Exclude common false positives
+                    if keyword == "ci" and "ci/" in run_lower:
+                        continue  # Likely a path reference
+                    return True
+        
+        return False
+    
+    def _link_job_to_jenkins(self, data: CIData, wf_name: str, job_name: str):
+        """Link a workflow job to Jenkins pipelines (generic)."""
+        workflow_ref = f"{wf_name}::{job_name}"
+        
+        for pipeline in data.jenkins_pipelines:
+            # Check if pipeline is triggered by GitHub
+            if self._is_triggered_by_github(pipeline):
+                pipeline_name = pipeline["name"]
+                jenkins_ref = f"jenkins:{pipeline_name}"
+                
+                # Update called_by for scripts called by this pipeline
+                for script in data.scripts:
+                    if jenkins_ref in script.called_by:
+                        chain_ref = f"{workflow_ref}→{jenkins_ref}"
+                        if chain_ref not in script.called_by:
+                            script.called_by.append(chain_ref)
+    
+    def _is_triggered_by_github(self, pipeline: Dict) -> bool:
+        """Check if Jenkins pipeline is triggered by GitHub (generic)."""
+        content = pipeline.get("content", "")
+        
+        # Generic indicators of GitHub-triggered pipelines
+        github_indicators = [
+            "githubPush", "github", "GIT_URL", "gitlabSourceRepo",
+            "pullRequest", "webhook", "pr_", "merge_request",
+        ]
+        
+        for indicator in github_indicators:
+            if indicator in content:
+                return True
+        
+        # Check shared libraries (might contain GitHub integration)
+        shared_libs = pipeline.get("shared_libraries", [])
+        for lib in shared_libs:
+            if "github" in lib.lower() or "gitlab" in lib.lower():
+                return True
+        
+        return False
+    
+    def _extract_jenkins_from_configs(self, data: CIData):
+        """Extract Jenkins info from other_ci_configs (generic)."""
+        for config in data.other_ci_configs:
+            parsed = config.parsed_data
+            if not parsed:
+                continue
+            
+            # Recursively search for jenkins/pipeline/job keys
+            for key in ["jenkins", "pipeline", "job", "jobs"]:
+                info = self._find_key_recursive(parsed, key)
+                if info:
+                    pipelines = self._extract_names_from_config(info)
+                    for pipeline_name in pipelines:
+                        self._link_config_to_jenkins(data, config, pipeline_name)
+    
+    def _find_key_recursive(self, obj: Any, key: str) -> Any:
+        """Recursively find a key in nested dict/list (generic)."""
+        if isinstance(obj, dict):
+            if key in obj:
+                return obj[key]
+            for v in obj.values():
+                result = self._find_key_recursive(v, key)
+                if result is not None:
+                    return result
+        elif isinstance(obj, list):
+            for item in obj:
+                result = self._find_key_recursive(item, key)
+                if result is not None:
+                    return result
+        return None
+    
+    def _extract_names_from_config(self, obj: Any) -> List[str]:
+        """Extract pipeline/job names from config object (generic)."""
+        names = []
+        if isinstance(obj, str):
+            # Filter out variables and invalid names
+            if not obj.startswith("$") and not obj.startswith("{{") and len(obj) > 2:
+                # Filter out URLs and paths
+                if "/" not in obj and "://" not in obj:
+                    names.append(obj)
+        elif isinstance(obj, dict):
+            # Check for 'name' key
+            if "name" in obj:
+                names.extend(self._extract_names_from_config(obj["name"]))
+            # Recursively search values
+            for v in obj.values():
+                names.extend(self._extract_names_from_config(v))
+        elif isinstance(obj, list):
+            for item in obj:
+                names.extend(self._extract_names_from_config(item))
+        return names
+    
+    def _link_config_to_jenkins(self, data: CIData, config: OtherCIConfigData, pipeline_name: str):
+        """Link other_ci_config to Jenkins pipeline (generic)."""
+        config_ref = f"external_ci:{config.system}"
+        
+        for pipeline in data.jenkins_pipelines:
+            # Match by name similarity
+            if pipeline_name in pipeline["name"] or pipeline["name"] in pipeline_name:
+                jenkins_ref = f"jenkins:{pipeline['name']}"
+                
+                # Update called_by for scripts
+                for script in data.scripts:
+                    if jenkins_ref in script.called_by:
+                        if config_ref not in script.called_by:
+                            script.called_by.append(config_ref)
 
 
 def extract_to_json(repo_path: str, output_file: str = None) -> str:

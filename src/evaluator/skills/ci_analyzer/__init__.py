@@ -12,17 +12,15 @@ from evaluator.skills.ci_analyzer.ci_data_extractor import (
     extract_to_json,
 )
 from evaluator.skills.ci_analyzer.ci_diagram_generator import (
-    generate_llm_prompt,
     generate_architecture_diagram,
-    generate_split_prompts,
+    generate_multi_round_prompts,
 )
 
 __all__ = [
     "CIDataExtractor",
     "extract_to_json",
-    "generate_llm_prompt",
     "generate_architecture_diagram",
-    "generate_split_prompts",
+    "generate_multi_round_prompts",
     "CIAnalyzer",
 ]
 
@@ -67,42 +65,43 @@ class CIAnalyzer:
         
         return data
     
-    def generate_prompt(
+    def generate_prompts(
         self,
         ci_data: dict | str,
-        output_file: str | None = None,
-    ) -> str:
+        output_dir: str,
+        max_per_batch: int = 10,
+    ) -> dict:
         """
-        生成 LLM 分析 Prompt
+        生成 Prompt 文件（多轮对话模式）
         
         Args:
-            ci_data: CI 数据 (dict 或 JSON 文件路径)
-            output_file: 输出 prompt 文件路径（可选）
+            ci_data: CI 数据
+            output_dir: 输出目录
+            max_per_batch: 每批次最大工作流数
         
         Returns:
-            生成的 prompt 内容
+            Dict 包含:
+            - main_rounds: 多轮对话的 rounds 列表
+            - main_system_prompt: 系统提示
+            - batch_files: 批次 prompt 文件列表
+            - all_files: 所有文件列表
+            - prompt_strategy: "multi_round"
+            - global_context: 全局上下文字符串
         """
         import json
         
-        print(f"\n正在生成分析 Prompt...")
+        print(f"\n正在生成 Prompt...")
         
-        # 支持传入文件路径或 dict
         if isinstance(ci_data, str):
             with open(ci_data, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
         else:
             raw_data = ci_data
         
-        prompt = generate_llm_prompt(raw_data)
-        
-        if output_file:
-            with open(output_file, "w", encoding="utf-8") as f:
-                f.write(prompt)
-            print(f"  Prompt 已保存: {output_file}")
-        else:
-            print(f"  Prompt 生成完成 ({len(prompt)} 字符)")
-        
-        return prompt
+        result = generate_multi_round_prompts(raw_data, output_dir, max_per_batch)
+        total_files = len(result.get("all_files", []))
+        print(f"  生成了 {total_files} 个文件 (多轮对话模式)")
+        return result
     
     def generate_report(
         self,
@@ -125,7 +124,6 @@ class CIAnalyzer:
         
         print(f"\n正在生成最终报告...")
         
-        # 支持传入文件路径或 dict
         if isinstance(ci_data, str):
             with open(ci_data, "r", encoding="utf-8") as f:
                 raw_data = json.load(f)
@@ -137,56 +135,3 @@ class CIAnalyzer:
         print(f"  报告已保存: {output_file}")
         
         return report
-    
-    def check_workflow_count(self, ci_data: dict | str) -> int:
-        """
-        检查工作流数量，用于决定是否需要分割 Prompt
-        
-        Args:
-            ci_data: CI 数据
-        
-        Returns:
-            工作流数量
-        """
-        import json
-        
-        if isinstance(ci_data, str):
-            with open(ci_data, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-        else:
-            raw_data = ci_data
-        
-        return len(raw_data.get("workflows", {}))
-    
-    def generate_split_prompts(
-        self,
-        ci_data: dict | str,
-        output_dir: str,
-        max_per_batch: int = 10,
-    ) -> list[str]:
-        """
-        为大型项目生成多个 Prompt 文件
-        
-        Args:
-            ci_data: CI 数据
-            output_dir: 输出目录
-            max_per_batch: 每批次最大工作流数
-        
-        Returns:
-            生成的文件路径列表
-        """
-        import json
-        
-        print(f"\n正在生成分批 Prompt...")
-        
-        if isinstance(ci_data, str):
-            with open(ci_data, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-        else:
-            raw_data = ci_data
-        
-        files = generate_split_prompts(raw_data, output_dir, max_per_batch)
-        
-        print(f"  生成了 {len(files)} 个文件")
-        
-        return files
