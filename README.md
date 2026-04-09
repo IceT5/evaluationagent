@@ -4,7 +4,9 @@
 
 ## 功能特性
 
-- **CI/CD 架构分析**：自动提取并分析 GitHub Actions、GitLab CI 等工作流配置
+- **CI/CD 架构分析**：
+  - **深度分析**：GitHub Actions（架构图、最佳实践、安全检测、性能优化）
+  - **配置提取**：GitLab CI、CircleCI、Azure Pipelines、Jenkins 等 10+ 平台
 - **智能报告生成**：生成 Markdown 和交互式 HTML 报告，包含架构图、阶段分析、脚本索引等
 - **项目对比**：使用 LLM 对多个项目的 CI/CD 架构进行智能对比分析
 - **持久化存储**：支持项目版本管理和历史记录

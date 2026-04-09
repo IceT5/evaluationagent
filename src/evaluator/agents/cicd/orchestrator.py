@@ -277,9 +277,11 @@ class CICDOrchestrator(BaseAgent):
         if validation_result.get("needs_retry"):
             retry_reason = validation_result.get("retry_reason", "未知原因")
             print(f"  [Orchestrator] 需要完全重试: {retry_reason}")
-            # 标记失败，让上层完全重试
-            state["errors"] = state.get("errors", []) + [f"需要完全重试: {retry_reason}"]
-            return state
+            # 返回新errors，让Reducer自动合并（不直接修改state）
+            return {
+                **state,
+                "errors": [f"需要完全重试: {retry_reason}"]
+            }
         
         if retry_mode == "retry" and retry_issues:
             state = self.retry_handling.safe_run(state)

@@ -7,6 +7,8 @@ import time
 import signal
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional, List, Tuple, Dict, Any
+from dataclasses import dataclass
+from enum import Enum
 
 if TYPE_CHECKING:
     from evaluator.agents.intent_parser_agent import ParsedIntent
@@ -44,6 +46,109 @@ except ImportError:
 from prompt_toolkit.completion import Completer, Completion
 
 
+# ========== 补全类型定义 ==========
+
+class CompletionType(Enum):
+    """补全类型枚举"""
+    PROJECT = "project"        # 项目名称
+    VERSION = "version"        # 版本号
+    DIMENSION = "dimension"    # 对比维度
+    FILE = "file"             # 文件路径
+    URL = "url"               # URL地址
+
+
+@dataclass
+class ParameterMeta:
+    """参数元数据"""
+    name: str                           # 参数名
+    completion_type: CompletionType     # 补全类型
+    required: bool = True              # 是否必需
+    depends_on: Optional[str] = None   # 依赖的参数（如version依赖project）
+    position: Optional[int] = None     # 位置参数的位置（可选）
+
+
+@dataclass
+class CommandMeta:
+    """命令元数据"""
+    name: str                           # 命令名
+    pattern: str                        # 正则表达式（从CommandParser.COMMANDS获取）
+    description: str = ""               # 描述（可选）
+    parameters: List[ParameterMeta] = None  # 参数列表
+
+
+class CommandRegistry:
+    """命令注册中心 - 集中管理所有命令定义和补全配置"""
+
+    COMMANDS: Dict[str, CommandMeta] = {}
+
+    @classmethod
+    def register(cls, name: str, parameters: List[ParameterMeta], description: str = ""):
+        """注册命令元数据"""
+        # 从CommandParser.COMMANDS获取pattern
+        pattern = CommandParser.COMMANDS.get(name, "")
+        cls.COMMANDS[name] = CommandMeta(
+            name=name,
+            pattern=pattern,
+            description=description,
+            parameters=parameters,
+        )
+
+    @classmethod
+    def get(cls, name: str) -> Optional[CommandMeta]:
+        """获取命令元数据"""
+        return cls.COMMANDS.get(name)
+
+    @classmethod
+    def initialize(cls):
+        """初始化所有命令的元数据"""
+        # show命令
+        cls.register(
+            "show",
+            parameters=[
+                ParameterMeta("name", CompletionType.PROJECT, required=True, position=1),
+                ParameterMeta("version", CompletionType.VERSION, required=False, depends_on="name"),
+            ],
+            description="显示项目信息"
+        )
+
+        # delete命令
+        cls.register(
+            "delete",
+            parameters=[
+                ParameterMeta("name", CompletionType.PROJECT, required=True, position=1),
+                ParameterMeta("version", CompletionType.VERSION, required=False, depends_on="name"),
+            ],
+            description="删除项目或版本"
+        )
+
+        # compare命令
+        cls.register(
+            "compare",
+            parameters=[
+                ParameterMeta("project_a", CompletionType.PROJECT, required=True, position=1),
+                ParameterMeta("project_b", CompletionType.PROJECT, required=True, position=2),
+                ParameterMeta("version_a", CompletionType.VERSION, required=False, depends_on="project_a"),
+                ParameterMeta("version_b", CompletionType.VERSION, required=False, depends_on="project_b"),
+                ParameterMeta("dimensions", CompletionType.DIMENSION, required=False),
+            ],
+            description="对比两个项目"
+        )
+
+        # insights/recommend/similar命令
+        for cmd in ["insights", "recommend", "similar"]:
+            cls.register(
+                cmd,
+                parameters=[
+                    ParameterMeta("name", CompletionType.PROJECT, required=True, position=1),
+                ],
+                description=f"{cmd}分析"
+            )
+
+        # 其他命令（无需参数补全）
+        for cmd in ["analyze", "list", "analyzers", "help", "version", "quit", "clear"]:
+            cls.register(cmd, parameters=[], description=cmd)
+
+
 def setup_interrupt_handler():
     """设置中断信号处理器"""
     if interrupt_controller is None:
@@ -57,18 +162,35 @@ def setup_interrupt_handler():
 
 
 class CommandCompleter(Completer):
-    """命令补全器 - 只有输入 / 时才显示命令列表"""
-    
-    def __init__(self, commands: List[str]):
+    """智能命令补全器 - 基于命令注册中心自动处理"""
+
+    def __init__(self, commands: List[str], storage_manager: Optional[StorageManager] = None):
         super().__init__()
         self.commands = commands
-    
+        self.storage = storage_manager
+
+        # 初始化命令注册中心
+        if not CommandRegistry.COMMANDS:
+            CommandRegistry.initialize()
+
+        # 补全提供者映射
+        self.completion_providers = {
+            CompletionType.PROJECT: self._complete_projects,
+            CompletionType.VERSION: self._complete_versions,
+            CompletionType.DIMENSION: self._complete_dimensions,
+        }
+
+        # 缓存机制
+        self._projects_cache = None
+        self._cache_time = 0
+        self._cache_ttl = 5  # 缓存5秒
+
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
-        
-        # 只有以 / 开头时才提供补全
-        if text.startswith('/'):
-            word = text[1:]  # 去掉 /
+
+        # 1. 命令名称补全（原有逻辑，保持不变）
+        if text.startswith('/') and ' ' not in text:
+            word = text[1:]
             for cmd in self.commands:
                 if cmd.startswith(word):
                     yield Completion(
@@ -76,9 +198,158 @@ class CommandCompleter(Completer):
                         start_position=-len(text),
                         display='/' + cmd,
                     )
-    
+            return
+
+        # 2. 参数补全（新增逻辑）
+        if not self.storage:
+            return  # 无存储管理器时，不提供参数补全
+
+        yield from self._complete_parameters(text)
+
+    def _complete_parameters(self, text: str):
+        """参数补全逻辑"""
+        parts = text.split()
+        if len(parts) < 2:
+            return
+
+        command = parts[0][1:]  # 去掉 /
+        command_meta = CommandRegistry.get(command)
+
+        if not command_meta or not command_meta.parameters:
+            return
+
+        last_word = parts[-1]
+
+        # 检测当前正在输入的参数
+        current_param = self._detect_current_parameter(parts, command_meta)
+
+        if current_param:
+            # 构建上下文（已输入的参数值）
+            context = self._build_context(parts, command_meta)
+
+            # 如果最后一个词是命名参数（如 --version-a），则前缀为空
+            if last_word.startswith('--'):
+                prefix = ''
+            else:
+                prefix = last_word
+
+            # 获取补全提供者
+            provider = self.completion_providers.get(current_param.completion_type)
+            if provider:
+                try:
+                    yield from provider(prefix, current_param, context)
+                except Exception:
+                    pass  # 静默失败
+
+    def _detect_current_parameter(self, parts: List[str], command_meta: CommandMeta) -> Optional[ParameterMeta]:
+        """检测当前正在输入的参数"""
+        # 检查命名参数（如 --version）
+        # 情况1: --param value（parts[-2]是--param）
+        # 情况2: --param （parts[-1]是--param，正在输入值）
+        if len(parts) >= 2 and parts[-2].startswith('--'):
+            param_name = parts[-2][2:].replace('-', '_')  # 去掉 -- 并转换为下划线
+            for param in command_meta.parameters:
+                if param.name == param_name:
+                    return param
+
+        # 检查最后一个词是否是命名参数（正在输入值）
+        if len(parts) >= 1 and parts[-1].startswith('--'):
+            param_name = parts[-1][2:].replace('-', '_')  # 去掉 -- 并转换为下划线
+            for param in command_meta.parameters:
+                if param.name == param_name:
+                    return param
+
+        # 检查位置参数
+        # 例如：/show <project> <version>
+        # parts: ['/show', 'proj', 'v1']
+        # 位置1对应project，位置2对应version
+        # parts[0]是命令，parts[1]是第1个位置参数，parts[2]是第2个位置参数
+        position = len(parts) - 1  # 减去命令本身
+        for param in command_meta.parameters:
+            if param.position == position:
+                return param
+
+        return None
+
+    def _build_context(self, parts: List[str], command_meta: CommandMeta) -> dict:
+        """构建上下文（已输入的参数值）"""
+        context = {}
+
+        # 解析位置参数
+        # parts[0]是命令，parts[1]是第1个位置参数，parts[2]是第2个位置参数
+        for param in command_meta.parameters:
+            if param.position and param.position < len(parts):
+                value = parts[param.position]
+                if not value.startswith('--'):
+                    context[param.name] = value
+
+        # 解析命名参数（简化版本）
+        for i, part in enumerate(parts):
+            if part.startswith('--') and i + 1 < len(parts):
+                param_name = part[2:].replace('-', '_')  # 转换为下划线
+                context[param_name] = parts[i + 1]
+
+        return context
+
+    def _complete_projects(self, prefix: str, param: ParameterMeta, context: dict):
+        """项目名称补全"""
+        for proj in self._get_projects():
+            if proj.startswith(prefix):
+                yield Completion(
+                    text=proj,
+                    start_position=-len(prefix),
+                    display=proj,
+                )
+
+    def _complete_versions(self, prefix: str, param: ParameterMeta, context: dict):
+        """版本号补全"""
+        # 获取依赖的项目名称
+        depends_on = param.depends_on
+        project_name = context.get(depends_on)
+
+        if not project_name:
+            return
+
+        for version in self._get_versions(project_name):
+            if version.startswith(prefix):
+                yield Completion(
+                    text=version,
+                    start_position=-len(prefix),
+                    display=version,
+                )
+
+    def _complete_dimensions(self, prefix: str, param: ParameterMeta, context: dict):
+        """维度补全"""
+        dimensions = ["complexity", "best_practices", "maintainability"]
+        for dim in dimensions:
+            if dim.startswith(prefix):
+                yield Completion(
+                    text=dim,
+                    start_position=-len(prefix),
+                    display=dim,
+                )
+
+    def _get_projects(self) -> List[str]:
+        """获取项目列表（带缓存）"""
+        now = time.time()
+        if self._projects_cache is None or (now - self._cache_time) > self._cache_ttl:
+            try:
+                from evaluator.core import list_projects
+                self._projects_cache = [p.name for p in list_projects()]
+                self._cache_time = now
+            except Exception:
+                self._projects_cache = []
+        return self._projects_cache
+
+    def _get_versions(self, project_name: str) -> List[str]:
+        """获取项目的版本列表"""
+        try:
+            return self.storage.list_versions(project_name)
+        except Exception:
+            return []
+
     async def get_completions_async(self, document, complete_event):
-        """异步方法（新版本 prompt_toolkit）"""
+        """异步方法（保持接口兼容）"""
         for completion in self.get_completions(document, complete_event):
             yield completion
 
@@ -88,7 +359,7 @@ class CommandParser:
     
     COMMANDS = {
         "analyze": r"^/analyze(?:\s+(?P<type>\w+))?(?:\s+(?P<path>.+))?$",
-        "compare": r"^/compare(?:\s+(?P<project_a>.+?))?(?:\s+(?P<project_b>.+?))?(?:\s+--dim(?:\s+(?P<dimensions>.+)))?$",
+        "compare": r"^/compare\s+(?P<project_a>[^\s]+)\s+(?P<project_b>[^\s]+)(?:\s+--version-a\s+(?P<version_a>[^\s]+))?(?:\s+--version-b\s+(?P<version_b>[^\s]+))?(?:\s+--dim\s+(?P<dimensions>.+))?$",
         "list": r"^/list(?:\s+--all)?$",
         "show": r"^/show(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
         "delete": r"^/delete(?:\s+(?P<name>.+?))?(?:\s+--version(?:\s+(?P<version>.+)))?$",
@@ -287,16 +558,27 @@ class CommandHandler:
         """处理 /compare 命令 - 使用 LangGraph 统一工作流"""
         project_a = args.get("project_a") or ""
         project_b = args.get("project_b") or ""
+        version_a = args.get("version_a")
+        version_b = args.get("version_b")
         dimensions_str = args.get("dimensions") or ""
-        
+
         if not project_a or not project_b:
-            self.output_func("用法: /compare <project_a> <project_b> [--dim dimensions]")
+            self.output_func("用法: /compare <project_a> <project_b> [--version-a <v1>] [--version-b <v2>] [--dim <dimensions>]")
+            self.output_func("  project_a, project_b: 项目名称（必需）")
+            self.output_func("  --version-a: 项目A的版本号（可选，默认最新）")
+            self.output_func("  --version-b: 项目B的版本号（可选，默认最新）")
+            self.output_func("  --dim: 对比维度，逗号分隔（可选）")
+            self.output_func("")
+            self.output_func("示例:")
+            self.output_func("  /compare proj1 proj2")
+            self.output_func("  /compare proj1 proj2 --version-a v1.0 --version-b v2.0")
+            self.output_func("  /compare proj1 proj2 --dim complexity,best_practices")
             return False
-        
+
         dimensions = None
         if dimensions_str:
             dimensions = [d.strip() for d in dimensions_str.split(",")]
-        
+
         api_key = os.getenv("OPENAI_API_KEY")
         llm_config = None
         if api_key:
@@ -306,18 +588,26 @@ class CommandHandler:
             }
         else:
             self.output_func("  警 未配置 LLM API Key，将使用规则分析")
-        
+
         initial_state = {
             "user_input": f"/compare {project_a} {project_b}",
             "intent": "compare",
             "params": {
                 "project_a": project_a,
                 "project_b": project_b,
+                "version_a": version_a,
+                "version_b": version_b,
                 "dimensions": dimensions,
             },
             "orchestrator_decision": {
                 "intent": "compare",
-                "params": {"project_a": project_a, "project_b": project_b, "dimensions": dimensions},
+                "params": {
+                    "project_a": project_a,
+                    "project_b": project_b,
+                    "version_a": version_a,
+                    "version_b": version_b,
+                    "dimensions": dimensions
+                },
                 "confidence": 1.0,
                 "needs_clarification": False,
                 "next_step": "compare",
@@ -327,6 +617,8 @@ class CommandHandler:
             "context": {"last_project": self.context.last_project},
             "project_a": project_a,
             "project_b": project_b,
+            "version_a": version_a,
+            "version_b": version_b,
             "dimensions": dimensions,
             "current_step": "",
             "completed_steps": [],
@@ -977,9 +1269,10 @@ def run_cli():
             except Exception:
                 pass
         
-        commands = ["analyze", "compare", "list", "show", "delete", "analyzers", 
+        commands = ["analyze", "compare", "list", "show", "delete", "analyzers",
                    "insights", "recommend", "similar", "help", "version", "quit", "exit", "clear"]
-        completer = CommandCompleter(commands)
+        storage = StorageManager()
+        completer = CommandCompleter(commands, storage_manager=storage)
         
         session = PromptSession(
             "eval-agent> ",
@@ -1020,6 +1313,16 @@ def run_cli():
                     should_quit = handler.handle(command, args)
                     if should_quit:
                         break
+                else:
+                    # 尝试识别部分命令并显示帮助
+                    parts = text.split()
+                    if len(parts) > 0:
+                        potential_cmd = parts[0][1:]  # 去掉 /
+                        if potential_cmd in CommandParser.COMMANDS:
+                            # 显示该命令的帮助信息
+                            handler.handle(potential_cmd, {})
+                        else:
+                            print(f"未知命令: {potential_cmd}")
                 continue
             
             known_projects = [p.name for p in list_projects()]
@@ -1083,6 +1386,16 @@ def run_cli_simple():
                 should_quit = handler.handle(command, args)
                 if should_quit:
                     break
+            else:
+                # 尝试识别部分命令并显示帮助
+                parts = text.split()
+                if len(parts) > 0:
+                    potential_cmd = parts[0][1:]  # 去掉 /
+                    if potential_cmd in CommandParser.COMMANDS:
+                        # 显示该命令的帮助信息
+                        handler.handle(potential_cmd, {})
+                    else:
+                        print(f"未知命令: {potential_cmd}")
             continue
         
         known_projects = [p.name for p in list_projects()]

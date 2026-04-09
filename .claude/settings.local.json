@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from evaluator.cli.app import CommandCompleter, CommandRegistry; print\\('导入成功'\\)\")",
+      "Bash(python test_completion.py)",
+      "Bash(python:*)"
+    ]
+  }
+}

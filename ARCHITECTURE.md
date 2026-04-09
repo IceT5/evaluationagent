@@ -1030,6 +1030,152 @@ else:
 | `/similar [name]` | 显示相似项目 |
 | `/help [topic]` | 显示帮助 |
 
+### 9.1 命令补全机制
+
+CLI使用**声明式配置**实现智能补全，支持命令名称、项目名称、版本号等自动补全。
+
+#### 架构设计
+
+```
+CommandParser.COMMANDS (单一数据源)
+        ↓
+CommandRegistry (命令注册中心)
+        ↓
+CommandCompleter (智能补全器)
+        ↓
+StorageManager (数据查询)
+```
+
+#### 核心组件
+
+**1. CompletionType（补全类型枚举）**
+
+```python
+class CompletionType(Enum):
+    PROJECT = "project"        # 项目名称
+    VERSION = "version"        # 版本号
+    DIMENSION = "dimension"    # 对比维度
+    FILE = "file"             # 文件路径
+    URL = "url"               # URL地址
+```
+
+**2. ParameterMeta（参数元数据）**
+
+```python
+@dataclass
+class ParameterMeta:
+    name: str                           # 参数名
+    completion_type: CompletionType     # 补全类型
+    required: bool = True              # 是否必需
+    depends_on: Optional[str] = None   # 依赖的参数
+    position: Optional[int] = None     # 位置参数的位置
+```
+
+**3. CommandMeta（命令元数据）**
+
+```python
+@dataclass
+class CommandMeta:
+    name: str                           # 命令名
+    pattern: str                        # 正则表达式
+    description: str = ""               # 描述
+    parameters: List[ParameterMeta]     # 参数列表
+```
+
+**4. CommandRegistry（命令注册中心）**
+
+```python
+class CommandRegistry:
+    """命令注册中心 - 集中管理所有命令定义和补全配置"""
+    
+    COMMANDS: Dict[str, CommandMeta] = {}
+    
+    @classmethod
+    def register(cls, name: str, parameters: List[ParameterMeta], description: str = ""):
+        """注册命令元数据"""
+        pattern = CommandParser.COMMANDS.get(name, "")
+        cls.COMMANDS[name] = CommandMeta(name, pattern, description, parameters)
+```
+
+#### 补全示例
+
+```bash
+# 命令名称补全
+/sho<TAB>  → /show
+
+# 项目名称补全
+/show <TAB>  → 显示项目列表
+/show cc<TAB>  → /show cccl
+
+# 版本号补全
+/show cccl --version <TAB>  → 显示版本列表
+/show cccl --version v<TAB>  → /show cccl --version v1.0.0
+
+# compare命令补全
+/compare cccl <TAB>  → 显示项目列表（第二个项目）
+/compare cccl TensorRT-LLM --version-a <TAB>  → 显示cccl的版本列表
+```
+
+### 9.2 新增命令补全配置
+
+当新增命令时，只需在`CommandRegistry.initialize()`中注册元数据，补全器会自动处理。
+
+#### 步骤
+
+**1. 在CommandParser.COMMANDS中添加正则表达式**
+
+```python
+# app.py - CommandParser类
+
+COMMANDS = {
+    # ... 现有命令
+    "new_command": r"^/new_command\s+(?P<project>.+?)(?:\s+--version\s+(?P<version>.+))?$",
+}
+```
+
+**2. 在CommandRegistry.initialize()中注册元数据**
+
+```python
+# app.py - CommandRegistry类
+
+@classmethod
+def initialize(cls):
+    # ... 现有命令注册
+    
+    # 新增命令注册
+    cls.register(
+        "new_command",
+        parameters=[
+            ParameterMeta("project", CompletionType.PROJECT, required=True, position=1),
+            ParameterMeta("version", CompletionType.VERSION, required=False, depends_on="project"),
+        ],
+        description="新命令说明"
+    )
+```
+
+**3. 无需修改CommandCompleter**
+
+补全器会自动根据注册的元数据提供补全。
+
+#### 补全类型说明
+
+| 补全类型 | 数据来源 | 依赖关系 | 示例 |
+|---------|---------|---------|------|
+| `PROJECT` | `list_projects()` | 无 | `/show <TAB>` |
+| `VERSION` | `storage.list_versions(project)` | 依赖项目名称 | `/show proj --version <TAB>` |
+| `DIMENSION` | 固定列表 | 无 | `/compare a b --dim <TAB>` |
+| `FILE` | 文件系统 | 无 | `/analyze <TAB>` |
+| `URL` | 无补全 | 无 | `/analyze https://...` |
+
+#### 设计优势
+
+- ✅ **单一数据源**：CommandParser.COMMANDS是唯一的命令定义
+- ✅ **声明式配置**：通过元数据声明补全需求
+- ✅ **自动处理**：补全器自动处理所有注册的命令
+- ✅ **易于扩展**：新增命令无需修改补全器代码
+- ✅ **依赖处理**：自动处理参数依赖关系（如version依赖project）
+- ✅ **异常安全**：补全失败时静默降级，不影响用户体验
+
 ---
 
 ## 十、文件结构规范

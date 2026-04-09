@@ -277,11 +277,11 @@ class StorageManager:
             return None
 
         return {
-            "metadata": self._load_json(version_dir / "metadata.json"),
-            "ci_data": self._load_json(version_dir / "ci_data.json"),
-            "report_md": self._load_text(version_dir / "report.md"),
-            "report_html": self._load_text(version_dir / "report.html"),
-            "architecture_json": self._load_json(version_dir / "architecture.json"),
+            "metadata": self._load_json(version_dir / "metadata.json") or {},
+            "ci_data": self._load_json(version_dir / "ci_data.json") or {},
+            "report_md": self._load_text(version_dir / "report.md") or "",
+            "report_html": self._load_text(version_dir / "report.html") or "",
+            "architecture_json": self._load_json(version_dir / "architecture.json") or {},
         }
 
     def delete_project(self, project_name: str, version_id: Optional[str] = None) -> bool:

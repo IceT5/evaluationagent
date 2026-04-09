@@ -89,6 +89,9 @@ class StorageAgent(BaseAgent):
             return []
         
         target_ci = target_data.get("ci_data", {})
+        if not target_ci:
+            return []
+        
         target_summary = target_data.get("metadata", {})
         
         all_projects = self.storage.list_projects()
@@ -103,6 +106,8 @@ class StorageAgent(BaseAgent):
                 continue
             
             other_ci = other_data.get("ci_data", {})
+            if not other_ci:
+                continue
             
             similarity = self._calculate_similarity(target_ci, other_ci)
             
@@ -176,6 +181,9 @@ class StorageAgent(BaseAgent):
                 continue
             
             ci_a = data_a.get("ci_data", {})
+            if not ci_a:
+                continue
+            
             workflows_a = len(ci_a.get("workflows", {}))
             
             for project_b in all_projects[i + 1:]:
@@ -187,6 +195,9 @@ class StorageAgent(BaseAgent):
                     continue
                 
                 ci_b = data_b.get("ci_data", {})
+                if not ci_b:
+                    continue
+                
                 workflows_b = len(ci_b.get("workflows", {}))
                 
                 size_diff = abs(workflows_a - workflows_b)

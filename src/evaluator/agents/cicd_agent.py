@@ -90,8 +90,8 @@ class CICDAgent(BaseAgent):
         print("  CI/CD 架构分析 (Agent 架构)")
         print(f"{'='*50}")
         
-        # 设置architecture_json_path
-        state["architecture_json_path"] = f"{storage_dir}/architecture.json" if storage_dir else None
+        # 设置architecture_json_path（不直接修改state，在传递给orchestrator时设置）
+        architecture_json_path = f"{storage_dir}/architecture.json" if storage_dir else None
         
         max_retries = 3
         result_state = None
@@ -102,7 +102,14 @@ class CICDAgent(BaseAgent):
             
             try:
                 orchestrator = self._get_orchestrator()
-                result_state = orchestrator.safe_run(state)
+                
+                # 创建包含architecture_json_path的新state（不修改原state）
+                state_with_path = {
+                    **state,
+                    "architecture_json_path": architecture_json_path
+                }
+                
+                result_state = orchestrator.safe_run(state_with_path)
                 
                 # 检查是否需要完全重试
                 validation_result = result_state.get("validation_result", {})
