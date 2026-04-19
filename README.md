@@ -143,7 +143,7 @@ cp .env.example .env
 | 变量 | 说明 | 默认值 |
 |------|------|--------|
 | `EVAL_MAX_SECTION_LENGTH` | 报告最大章节长度 | 3000 |
-| `EVAL_MAX_WORKFLOWS_SINGLE` | 单次 prompt 最大工作流数 | 10 |
+| `EVAL_MAX_WORKFLOWS_SINGLE` | 单次 prompt 最大工作流数 | 20 |
 | `EVAL_MAX_WORKFLOWS_BATCH` | 每批工作流数 | 10 |
 
 #### UI 配置
@@ -215,7 +215,7 @@ EVAL_LLM_MAX_TOKENS=131072
 
 # 报告配置
 EVAL_MAX_SECTION_LENGTH=3000
-EVAL_MAX_WORKFLOWS_SINGLE=10
+EVAL_MAX_WORKFLOWS_SINGLE=20
 EVAL_MAX_WORKFLOWS_BATCH=10
 
 # UI 配置
@@ -287,6 +287,30 @@ python -m evaluator.cli.app
 /delete my-project --version v1_20260319_184336
 ```
 
+#### /insights - 智能分析
+
+查看项目的智能分析结果（分析完成后异步生成）。
+
+```bash
+/insights my-project
+```
+
+#### /recommend - 改进建议
+
+查看项目的 CI/CD 改进建议。
+
+```bash
+/recommend my-project
+```
+
+#### /similar - 相似项目
+
+查看与指定项目相似的其他项目。
+
+```bash
+/similar my-project
+```
+
 #### /analyzers - 列出分析器
 
 查看可用的分析器。
@@ -330,6 +354,7 @@ data/projects/{name}/{version}/
 ├── report.html             # 交互式 HTML 报告
 ├── architecture.json       # 架构图数据（用于可视化）
 ├── analysis_summary.json   # 分析摘要
+├── insights.json           # 智能分析结果（异步生成）
 └── prompts/               # 发送给 LLM 的提示词
 ```
 

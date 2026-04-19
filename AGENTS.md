@@ -1,6 +1,6 @@
 # Eval-Agent 开发指南
 
-> AI编程工具请先阅读本文档，遵从所有开发要求
+> AI编程工具请先阅读本文档，遵从所有开发要求。Claude Code 用户请同时参考 [CLAUDE.md](./CLAUDE.md)（自动加载）。
 
 ## 核心原则（必须遵从）
 
@@ -185,7 +185,7 @@ CLI → Core (LangGraph) → Agents → Skills/Storage
 
 详细架构见 [ARCHITECTURE.md](./ARCHITECTURE.md)
 
-## Agent列表（28个）
+## Agent列表（30个）
 
 ### 核心（7个）
 - InputAgent, LoaderAgent, IntentParserAgent
@@ -211,9 +211,10 @@ CLI → Core (LangGraph) → Agents → Skills/Storage
 ### 修复（1个）
 - ReportFixAgent
 
-### 处理（4个）
-- ListHandlerAgent, InfoHandlerAgent
-- DeleteHandlerAgent, HelpHandlerAgent
+### 处理（11个）
+- ListHandlerAgent, InfoHandlerAgent, DeleteHandlerAgent, HelpHandlerAgent
+- InsightsHandlerAgent, RecommendHandlerAgent, SimilarHandlerAgent
+- AnalyzersHandlerAgent, VersionHandlerAgent, ClearHandlerAgent, QuitHandlerAgent
 
 ### 验证（2个）
 - ErrorHandlerAgent, StateValidationAgent
@@ -371,6 +372,7 @@ mypy src/
 
 ## 参考文档
 
+- [CLAUDE.md](./CLAUDE.md) - Claude Code 快速指南（自动加载）
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - 详细架构设计
 - [README.md](./README.md) - 使用说明
 - [CHANGELOG.md](./CHANGELOG.md) - 更新日志

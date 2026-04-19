@@ -159,9 +159,6 @@ class ResultMergingAgent(BaseAgent):
             "key_configs": key_configs,
         }
 
-        # 从 merged_response 提取 ### 子章节
-        arch_summary_section = _extract_subsection(merged_response, "架构特点总结")
-
         summary_input_data = {
             "scores": scores,
             "strengths": strengths,
@@ -170,8 +167,6 @@ class ResultMergingAgent(BaseAgent):
         }
 
         findings_markdown = "## 关键发现和建议\n\n"
-        if arch_summary_section:
-            findings_markdown += arch_summary_section + "\n\n"
         if strengths:
             findings_markdown += "### 优势\n"
             for item in strengths:

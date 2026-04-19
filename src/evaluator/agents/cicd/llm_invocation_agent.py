@@ -381,37 +381,6 @@ def _is_script_batch(prompt_path: str, batch_meta: Dict[str, Any]) -> bool:
     lowered = (prompt_path or "").lower()
     return "script_analysis" in lowered or "prompt_script_" in lowered
 
-    diagnostics = []
-    missing_fields = []
-    if not required_artifacts["overview"]:
-        missing_fields.append("overview")
-    if not required_artifacts["stage_division"]:
-        missing_fields.append("stage_division")
-    if not architecture_json:
-        missing_fields.append("architecture_json")
-
-    if missing_fields:
-        diagnostics.append(f"缺少分批依赖的多轮产物字段: {', '.join(missing_fields)}")
-
-    workflow_names = list((ci_data or {}).get("workflows", {}).keys())
-    return {
-        "context_status": "ready" if not missing_fields else "incomplete",
-        "schema_version": "v1",
-        "source": "multi_round_contract",
-        "global_context": global_context or "",
-        "analysis_scope": {
-            "workflow_names": workflow_names,
-            "batch_file_count": len(batch_files),
-        },
-        "constraints": {
-            "allow_implicit_conversation_state": False,
-            "batch_inputs_must_come_from_state": True,
-        },
-        "input_artifacts": required_artifacts,
-        "retry_context": {},
-        "diagnostics": diagnostics,
-    }
-
 
 def _merge_key_configs_from_responses(responses: List[str]) -> List[dict]:
     """合并多个响应中的关键配置信息

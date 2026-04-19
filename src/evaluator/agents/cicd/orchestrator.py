@@ -164,7 +164,6 @@ class CICDOrchestrator(BaseAgent):
             {
                 "retry": "retry",
                 "organize": "organize",
-                "fail": END,
             }
         )
         
@@ -205,8 +204,8 @@ class CICDOrchestrator(BaseAgent):
             return "skip"
         return "continue"
     
-    def _route_after_check(self, state: Dict[str, Any]) -> Literal["retry", "organize", "fail"]:
-        """质量检查后的路由"""
+    def _route_after_check(self, state: Dict[str, Any]) -> Literal["retry", "organize"]:
+        """质量检查后的路由：只依赖 contract_check_result 和 validation_result"""
         contract_check_result = state.get("contract_check_result", {})
         if contract_check_result.get("status") == "failed":
             return "retry"
@@ -214,21 +213,7 @@ class CICDOrchestrator(BaseAgent):
         validation_result = state.get("validation_result", {})
         if validation_result.get("needs_retry"):
             return "retry"
-        
-        retry_mode = state.get("retry_mode")
-        retry_issues = state.get("retry_issues", [])
-        errors = state.get("errors", [])
-        
-        if retry_mode in ("retry", "supplement") and retry_issues:
-            return "retry"
-        
-        if errors and len(errors) > 0:
-            retry_count = state.get("cicd_retry_count", 0)
-            max_retries = state.get("max_retries", 3)
-            if retry_count < max_retries:
-                return "retry"
-            return "fail"
-        
+
         return "organize"
 
     def _route_after_batch_input(self, state: Dict[str, Any]) -> Literal["retry", "merge"]:
@@ -256,11 +241,4 @@ class CICDOrchestrator(BaseAgent):
         return {
             **state,
             "errors": state.get("errors", []) + ["CICDOrchestrator: LangGraph 不可用，禁止回退到 run_sequential"],
-        }
-    
-    def _run_sequential(self, state: EvaluatorState) -> EvaluatorState:
-        """历史兼容入口：正式业务路径禁止使用。"""
-        return {
-            **state,
-            "errors": state.get("errors", []) + ["CICDOrchestrator: run_sequential 已退役，正式业务路径必须使用 LangGraph"],
         }

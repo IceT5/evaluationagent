@@ -1,6 +1,6 @@
 """报告生成Agent - 生成Markdown和HTML报告"""
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Dict, Any
 
 from evaluator.state import EvaluatorState
 from evaluator.agents.base_agent import BaseAgent, AgentMeta
@@ -345,61 +345,30 @@ class SummaryGenerationAgent(BaseAgent):
                 },
             }
         
-        summary_data = self._generate_summary(
-            merged_response, ci_data, architecture_json, summary_path  # type: ignore[arg-type]
-        )
-        
-        print(f"  摘要已保存: {summary_path}")
-        
+        # 前两层均无数据，返回空摘要
+        summary_data = {
+            "scores": {},
+            "score_rationale": {},
+            "findings": {"strengths": [], "weaknesses": []},
+            "recommendations": [],
+        }
+        with open(summary_path, "w", encoding="utf-8") as f:
+            json.dump(summary_data, f, ensure_ascii=False, indent=2)
+        print(f"  摘要已保存（空摘要）: {summary_path}")
+
+        workflow_count = state.get("workflow_count", 0)
+        actions_count = len(ci_data.get("actions", []))
+
         return {
             **state,
             "analysis_summary": summary_data,
-        }
-    
-    def _generate_summary(
-        self,
-        merged_response: str,
-        ci_data: Optional[dict],
-        architecture_json: Optional[dict],
-        output_path: str
-    ) -> dict:
-        """从LLM响应中提取摘要"""
-        import json
-        import re
-        
-        summary_data = {}
-        
-        match = re.search(
-            r'<!--\s*ANALYSIS_SUMMARY\s*(.*?)\s*ANALYSIS_SUMMARY\s*-->',
-            merged_response,
-            re.DOTALL
-        )
-        
-        if match:
-            try:
-                summary_data = json.loads(match.group(1).strip())
-                print("  从报告中提取到评估评分")
-            except json.JSONDecodeError:
-                print("  解析摘要JSON失败，使用默认值")
-                summary_data = self._generate_default_summary(ci_data or {})
-        else:
-            print("  未找到摘要标记，使用默认值")
-            summary_data = self._generate_default_summary(ci_data or {})
-        
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(summary_data, f, ensure_ascii=False, indent=2)
-        
-        return summary_data
-    
-    def _generate_default_summary(self, ci_data: dict) -> dict:
-        """生成默认摘要"""
-        workflows = ci_data.get("workflows", {})
-        return {
-            "scores": {},
-            "score_rationale": {},
-            "findings": {
-                "strengths": [],
-                "weaknesses": []
+            "cicd_analysis": {
+                "status": "success",
+                "workflows_count": workflow_count,
+                "actions_count": actions_count,
+                "ci_data_path": state.get("ci_data_path"),
+                "report_path": state.get("report_md"),
+                "architecture_json_path": state.get("architecture_json_path"),
+                "analysis_summary_path": summary_path,
             },
-            "recommendations": []
         }
