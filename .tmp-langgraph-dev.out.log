@@ -1,0 +1,40 @@
+[OK] venv activated
+[OK] LANGSMITH_API_KEY: lsv2_pt_e7fa09714b52...
+[OK] LANGSMITH_ENDPOINT: https://eu.api.smith.langchain.com
+[OK] LANGSMITH_PROJECT: evaluation
+[OK] LANGSMITH_BATCH_INGEST_SIZE_LIMIT: 100
+
+LangSmith tracing env vars set:
+  LANGSMITH_TRACING_V2 = true
+  LANGSMITH_API_KEY    = lsv2_pt_e7fa09714b52...
+  LANGSMITH_ENDPOINT   = https://eu.api.smith.langchain.com
+  LANGSMITH_PROJECT    = evaluation
+
+[INFO] Found .langgraph_api/ (previous checkpoint)
+
+Starting langgraph dev...
+==================================================
+2026-04-14T11:02:41.342479Z [info     ] Starting dev persistence flush loop [langgraph_runtime_inmem._persistence] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:41.399125Z [info     ] Using langgraph_runtime_inmem  [langgraph_runtime] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:41.430332Z [info     ] Using auth of type=noop        [langgraph_api.auth.middleware] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:41.441495Z [info     ] Starting In-Memory runtime with langgraph-api=0.7.99 and in-memory runtime=0.27.3 [langgraph_runtime_inmem.lifespan] api_variant=local_dev langgraph_api_version=0.7.99 langgraph_runtime_inmem_version=0.27.3 thread_name=asyncio_0 version=0.7.99
+2026-04-14T11:02:41.676318Z [info     ] [version] A newer version of langgraph-api is available: 0.7.99 ¡ú 0.7.100  (pip install -U langgraph-api) [version_check] api_variant=local_dev langgraph_api_version=0.7.99 message='[version] A newer version of langgraph-api is available: 0.7.99 ¡ú 0.7.100  (pip install -U langgraph-api)' thread_name='Thread-4 (_check_newer_version)'
+2026-04-14T11:02:41.943388Z [info     ] Starting metadata loop         [langgraph_api.metadata] api_variant=local_dev endpoint=https://eu.api.smith.langchain.com/v1/metadata/submit langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:41.959092Z [info     ] Getting auth instance: None    [langgraph_api.auth.custom] api_variant=local_dev langgraph_api_version=0.7.99 langgraph_auth=None thread_name=MainThread
+2026-04-14T11:02:42.560056Z [info     ] HTTP Request: POST https://eu.api.smith.langchain.com/v1/metadata/submit "HTTP/1.1 204 No Content" [httpx] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:42.566545Z [info     ] Successfully submitted metadata to LangSmith instance [langgraph_api.metadata] api_variant=local_dev langgraph_api_version=0.7.99 n_nodes=0 n_runs=0 thread_name=MainThread
+2026-04-14T11:02:44.647792Z [info     ] Importing graph profiling      [langgraph_api.timing.timer] api_variant=local_dev elapsed_seconds=2.704451400000835 graph_id=evaluator langgraph_api_version=0.7.99 module=None name=_graph_from_spec path=./src/evaluator/graph.py thread_name=asyncio_0
+2026-04-14T11:02:44.731601Z [info     ] Application started up in 4.142s [langgraph_api.timing.timer] api_variant=local_dev elapsed=4.141609099999187 langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:44.792264Z [info     ] Starting cron scheduler        [langgraph_api.cron_scheduler] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=MainThread
+2026-04-14T11:02:44.792469Z [info     ] Starting queue with shared loop [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=asyncio_1
+2026-04-14T11:02:44.800583Z [info     ] Starting 10 background workers [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 thread_name=asyncio_0
+2026-04-14T11:02:44.803654Z [info     ] Worker stats                   [langgraph_runtime_inmem.queue] active=0 api_variant=local_dev available=10 langgraph_api_version=0.7.99 max=10 thread_name=asyncio_1
+2026-04-14T11:02:45.148560Z [info     ] Server started in 5.19s        [browser_opener] api_variant=local_dev langgraph_api_version=0.7.99 message='Server started in 5.19s' thread_name='Thread-3 (_open_browser)'
+2026-04-14T11:02:45.155179Z [info     ] 2026-04-14T11:02:45.190160Z [info     ] URL: https://eu.smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024&organizationId=200b63f7-13ca-4974-a141-f35419f0d528 [browser_opener] api_variant=local_dev langgraph_api_version=0.7.99 message='URL: https://eu.smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024&organizationId=200b63f7-13ca-4974-a141-f35419f0d528' thread_name='Thread-3 (_open_browser)'
+2026-04-14T11:02:45.313273Z [info     ] Queue stats                    [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 n_pending=0 n_running=0 pending_runs_wait_time_max_secs=None pending_runs_wait_time_med_secs=None pending_unblocked_runs_wait_time_max_secs=None thread_name=asyncio_0
+2026-04-14T11:03:44.952037Z [info     ] Worker stats                   [langgraph_runtime_inmem.queue] active=0 api_variant=local_dev available=10 langgraph_api_version=0.7.99 max=10 thread_name=asyncio_1
+2026-04-14T11:03:45.466583Z [info     ] Queue stats                    [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 n_pending=0 n_running=0 pending_runs_wait_time_max_secs=None pending_runs_wait_time_med_secs=None pending_unblocked_runs_wait_time_max_secs=None thread_name=asyncio_0
+2026-04-14T11:04:45.309825Z [info     ] Worker stats                   [langgraph_runtime_inmem.queue] active=0 api_variant=local_dev available=10 langgraph_api_version=0.7.99 max=10 thread_name=asyncio_0
+2026-04-14T11:04:45.831032Z [info     ] Queue stats                    [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 n_pending=0 n_running=0 pending_runs_wait_time_max_secs=None pending_runs_wait_time_med_secs=None pending_unblocked_runs_wait_time_max_secs=None thread_name=asyncio_1
+2026-04-14T11:05:45.322267Z [info     ] Worker stats                   [langgraph_runtime_inmem.queue] active=0 api_variant=local_dev available=10 langgraph_api_version=0.7.99 max=10 thread_name=asyncio_0
+2026-04-14T11:05:45.840979Z [info     ] Queue stats                    [langgraph_runtime_inmem.queue] api_variant=local_dev langgraph_api_version=0.7.99 n_pending=0 n_running=0 pending_runs_wait_time_max_secs=None pending_runs_wait_time_med_secs=None pending_unblocked_runs_wait_time_max_secs=None thread_name=asyncio_1

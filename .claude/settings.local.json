@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from evaluator.cli.app import CommandCompleter, CommandRegistry; print\\('导入成功'\\)\")",
+      "Bash(python test_completion.py)",
+      "Bash(python:*)",
+      "Bash(dir F:\\\\eval-agent\\\\data\\\\projects\\\\pytorch\\\\v11_20260415_000156:*)",
+      "Bash(dir F:\\\\eval-agent\\\\data\\\\projects\\\\pytorch\\\\v11_20260415_000156\\\\prompts:*)",
+      "Bash(dir /s ci_data.json)",
+      "Bash(python3:*)",
+      "Read(//tmp/**)",
+      "Bash(sed -n '2170,2185p' \"F:/eval-agent/data/projects/cccl/v20_20260417_221759/llm_response.md\")",
+      "Bash(sed -n '2320,2340p' \"F:/eval-agent/data/projects/cccl/v20_20260417_221759/llm_response.md\")",
+      "Bash(xargs grep:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
+    ]
+  }
+}

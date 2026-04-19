@@ -1,0 +1,49 @@
+INFO:langgraph_api.cli:
+
+        Welcome to
+
+¨j  ©°©¤©´©°©´©°©°©¤©´¨X¨T¨[©Ð©¤©´©°©¤©´©°©¤©´©Ð ©Ð
+¨U  ©À©¤©È©¦©¦©¦©¦ ©Ð¨U ¨j©À©Ð©¼©À©¤©È©À©¤©¼©À©¤©È
+¨m¨T¨a©Ø ©Ø©¼©¸©¼©¸©¤©¼¨^¨T¨a©Ø©¸©¤©Ø ©Ø©Ø  ©Ø ©Ø
+
+- \U0001f680 API: [36mhttp://127.0.0.1:2024[0m
+- \U0001f3a8 Studio UI: [36mhttps://eu.smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024[0m
+- \U0001f4da API Docs: [36mhttp://127.0.0.1:2024/docs[0m
+
+This in-memory server is designed for development and testing.
+For production use, please use LangSmith Deployment.
+
+
+[version] A newer version of langgraph-api is available: 0.7.99 ¡ú 0.7.100  (pip install -U langgraph-api)
+Server started in 5.19s
+\U0001f3a8 Opening Studio in your browser...
+--- Logging error ---
+Traceback (most recent call last):
+  File "C:\Users\86131\AppData\Local\Programs\Python\Python313\Lib\logging\__init__.py", line 1154, in emit
+    stream.write(msg + self.terminator)
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "F:\code\evaluationagent\.venv\Lib\site-packages\colorama\ansitowin32.py", line 47, in write
+    self.__convertor.write(text)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "F:\code\evaluationagent\.venv\Lib\site-packages\colorama\ansitowin32.py", line 177, in write
+    self.write_and_convert(text)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "F:\code\evaluationagent\.venv\Lib\site-packages\colorama\ansitowin32.py", line 202, in write_and_convert
+    self.write_plain_text(text, cursor, start)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "F:\code\evaluationagent\.venv\Lib\site-packages\colorama\ansitowin32.py", line 210, in write_plain_text
+    self.wrapped.write(text[start:end])
+    ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'gbk' codec can't encode character '\U0001f3a8' in position 0: illegal multibyte sequence
+Call stack:
+  File "C:\Users\86131\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1015, in _bootstrap
+    self._bootstrap_inner()
+  File "C:\Users\86131\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 1044, in _bootstrap_inner
+    self.run()
+  File "C:\Users\86131\AppData\Local\Programs\Python\Python313\Lib\threading.py", line 995, in run
+    self._target(*self._args, **self._kwargs)
+  File "F:\code\evaluationagent\.venv\Lib\site-packages\langgraph_api\cli.py", line 311, in _open_browser
+    thread_logger.info(
+Message: '\U0001f3a8 Opening Studio in your browser...'
+Arguments: ()
+URL: https://eu.smith.langchain.com/studio/?baseUrl=http://127.0.0.1:2024&organizationId=200b63f7-13ca-4974-a141-f35419f0d528
