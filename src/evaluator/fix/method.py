@@ -103,7 +103,6 @@ class LLMFixMethod(FixMethod):
         "job_missing",
         "missing_workflow_detail",
         "missing_job_detail",
-        "weak_analysis",
     }
     
     def __init__(self, llm_client):

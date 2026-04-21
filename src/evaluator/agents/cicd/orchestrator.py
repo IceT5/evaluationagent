@@ -130,6 +130,7 @@ class CICDOrchestrator(BaseAgent):
         workflow.add_node("retry", self._wrap(self.retry_handling))
         workflow.add_node("report", self._wrap(self.report_generation))
         workflow.add_node("summary", self._wrap(self.summary_generation))
+        workflow.add_node("fail_finalize", self._fail_finalize)
         
         workflow.set_entry_point("extract")
         
@@ -170,9 +171,10 @@ class CICDOrchestrator(BaseAgent):
         workflow.add_conditional_edges(
             "retry",
             self._route_after_retry,
-            {"invoke": "invoke", "fail": END}
+            {"invoke": "invoke", "fail": "fail_finalize"}
         )
-        
+
+        workflow.add_edge("fail_finalize", END)
         workflow.add_edge("organize", "report")
         workflow.add_edge("report", "summary")
         workflow.add_edge("summary", END)
@@ -222,6 +224,20 @@ class CICDOrchestrator(BaseAgent):
             return "merge"
         return "retry"
     
+    @staticmethod
+    def _fail_finalize(state: Dict[str, Any]) -> Dict[str, Any]:
+        """子图失败终止节点：确保 cicd_analysis 始终被设置"""
+        return {
+            **state,
+            "cicd_analysis": {
+                "status": "failed",
+                "workflows_count": state.get("workflow_count", 0),
+                "ci_data_path": state.get("ci_data_path"),
+                "report_path": state.get("report_md"),
+                "architecture_json_path": state.get("architecture_json_path"),
+            },
+        }
+
     def _route_after_retry(self, state: Dict[str, Any]) -> Literal["invoke", "fail"]:
         """重试处理后的路由"""
         retry_result = state.get("cicd_retry_result", {})

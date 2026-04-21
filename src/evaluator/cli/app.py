@@ -450,9 +450,8 @@ class CommandHandler:
         if result is not None:
             return result
 
-        # fallback: 本地执行
-        config = {"configurable": {"thread_id": f"cli-{int(time.time())}-{hash(str(initial_state)[:50]) % 10000}"}}
-        return self.graph.invoke(initial_state, config=config)
+        # fallback: 本地执行（支持 interrupt/resume 循环）
+        return self._invoke_local_with_resume(initial_state)
 
     def _try_invoke_via_server(self, initial_state: dict) -> Optional[dict]:
         """通过 Agent Server 流式执行 run（Studio 实时高亮 + CLI 逐步进度）

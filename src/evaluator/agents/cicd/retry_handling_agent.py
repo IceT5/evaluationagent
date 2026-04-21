@@ -30,7 +30,7 @@ class RetryHandlingAgent(BaseAgent):
             name="RetryHandlingAgent",
             description="处理重试和补充模式",
             category="analysis",
-            inputs=["retry_mode", "retry_issues", "cicd_existing_report", "ci_data"],
+            inputs=["ci_data"],
             outputs=["merged_response", "cicd_retry_count"],
             dependencies=["QualityCheckAgent"],
         )
@@ -145,6 +145,16 @@ class RetryHandlingAgent(BaseAgent):
             failure_scope = cicd_failure_data.get("failure_scope", "execution")
             retry_entry_stage = "batch_execute"
             retry_mode = "rerun_batch"
+        else:
+            # 检测 batch_input_context 不完整（architecture_json 提取失败）
+            batch_ctx = state.get("batch_input_context") or {}
+            if batch_ctx.get("context_status") == "incomplete":
+                requested = True
+                trigger_source = "batch_input_incomplete"
+                retry_reason = "architecture_json 提取失败，需要重新执行多轮分析"
+                failure_scope = "multi_round"
+                retry_entry_stage = "multi_round"
+                retry_mode = "rerun_multi_round"
 
         current_attempt_count = state.get("cicd_retry_count", 0)
         max_attempts = state.get("max_retries", 3)

@@ -13,7 +13,12 @@
       "Bash(sed -n '2320,2340p' \"F:/eval-agent/data/projects/cccl/v20_20260417_221759/llm_response.md\")",
       "Bash(xargs grep:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(wc -l /f/code/evaluationagent/src/evaluator/agents/cicd/*.py)",
+      "WebSearch",
+      "WebFetch(domain:docs.cursor.com)",
+      "WebFetch(domain:aider.chat)",
+      "WebFetch(domain:cli.devin.ai)"
     ]
   }
 }

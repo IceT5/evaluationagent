@@ -561,17 +561,44 @@ def extract_from_markdown_table(response: str, round_num: int) -> dict:
 
 
 def extract_architecture_json(response: str) -> dict:
-    """从响应中提取 ARCHITECTURE_JSON"""
+    """从响应中提取 ARCHITECTURE_JSON
+
+    优先级：
+    1. <!-- ARCHITECTURE_JSON ... ARCHITECTURE_JSON --> 标记（唯一标准格式）
+    2. ```json ... ``` 代码块中包含 "layers" 键的 JSON
+    3. 全文直接解析 JSON（包含 "layers" 键）
+    """
     import json
     import re
-    
+
+    # 方法 1：标准标记格式
     match = re.search(r'<!--\s*ARCHITECTURE_JSON\s*([\s\S]*?)\s*ARCHITECTURE_JSON\s*-->', response)
     if match:
         try:
             return json.loads(match.group(1).strip())
         except json.JSONDecodeError:
             pass
-    
+
+    # 方法 2：扫描 ```json ... ``` 代码块，取包含 "layers" 键的第一个
+    for code_block in re.finditer(r'```(?:json)?\s*\n([\s\S]*?)```', response):
+        candidate = code_block.group(1).strip()
+        try:
+            parsed = json.loads(candidate)
+            if isinstance(parsed, dict) and "layers" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            continue
+
+    # 方法 3：尝试直接解析全文（兜底）
+    text = response.strip()
+    if text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "layers" in parsed:
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
     return {}
 
 

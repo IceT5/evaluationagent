@@ -3,7 +3,7 @@ import re
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional, Dict, List, Set, Any
+from typing import Optional, Dict, List, Set, Any, Tuple
 from evaluator.utils import parallel_execute
 from evaluator.llm import LLMClient
 from .base_agent import BaseAgent, AgentMeta
@@ -18,6 +18,7 @@ class GroundTruth:
     scripts: Set[str] = field(default_factory=set)
     actions: Set[str] = field(default_factory=set)
     total_steps: int = 0
+    valid_triggers: Set[str] = field(default_factory=set)  # 项目实际使用的所有触发类型
 
 
 @dataclass
@@ -271,13 +272,20 @@ class ReviewerAgent(BaseAgent):
                         action = uses.split("@")[0]
                         actions.add(action)
         
+        # 收集项目所有触发类型（用于过滤误提取）
+        all_trigger_types: Set[str] = set()
+        for wf_data in ci_data.get("workflows", {}).values():
+            for t in wf_data.get("triggers", []):
+                all_trigger_types.add(t.lower())
+
         return GroundTruth(
             workflows=workflows,
             jobs=jobs,
             triggers=triggers,
             scripts=scripts,
             actions=actions,
-            total_steps=total_steps
+            total_steps=total_steps,
+            valid_triggers=all_trigger_types,
         )
     
     def _extract_valid_triggers(self, ci_data: Dict) -> Set[str]:
@@ -301,7 +309,23 @@ class ReviewerAgent(BaseAgent):
         """用正则统计步骤详情数量"""
         pattern = r'步骤\d+:'
         return len(re.findall(pattern, report))
-    
+
+    def _count_jobs_with_step_analysis(self, report: str) -> Tuple[int, int]:
+        """统计报告中有步骤分析的 Job 块数 vs 步骤详情块中的 Job 总数
+
+        Returns:
+            (covered_jobs, total_jobs): 有步骤分析的 Job 数, 步骤详情块中的 Job 总数
+        """
+        job_blocks = re.split(r'(?=^- Job \d+:)', report, flags=re.MULTILINE)
+        total = 0
+        covered = 0
+        for block in job_blocks:
+            if re.match(r'^- Job \d+:', block.strip()):
+                total += 1
+                if re.search(r'步骤\d+:', block):
+                    covered += 1
+        return covered, total
+
     def _extract_workflow_names_by_regex(self, report: str) -> Set[str]:
         """用正则提取工作流名称列表"""
         pattern = r'####\s+\d+\.\d+\s+([\w.-]+\.ya?ml)'
@@ -416,7 +440,7 @@ class ReviewerAgent(BaseAgent):
             print("  ⚠️ 未配置 LLM，使用代码提取 Job")
             for wf, section in workflow_sections.items():
                 known_jobs = ground_truth.jobs.get(wf, set())
-                claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs)
+                claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs, ground_truth.valid_triggers)
             return claimed_jobs
         
         # 并发 LLM 提取（使用统一并发工具）
@@ -436,7 +460,7 @@ class ReviewerAgent(BaseAgent):
                     # 重试全部失败后，降级到代码提取
                     section = workflow_sections.get(wf_name, "")
                     known_jobs = ground_truth.jobs.get(wf_name, set())
-                    jobs = self._extract_jobs_by_code(section, known_jobs)
+                    jobs = self._extract_jobs_by_code(section, known_jobs, ground_truth.valid_triggers)
                     return (wf_name, jobs, str(e))
             return task
         
@@ -457,7 +481,7 @@ class ReviewerAgent(BaseAgent):
             print(f"  ⚠️ 并发提取失败: {e}，使用代码提取")
             for wf, section in workflow_sections.items():
                 known_jobs = ground_truth.jobs.get(wf, set())
-                claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs)
+                claimed_jobs[wf] = self._extract_jobs_by_code(section, known_jobs, ground_truth.valid_triggers)
         
         return claimed_jobs
     
@@ -594,16 +618,17 @@ class ReviewerAgent(BaseAgent):
         
         return set()
     
-    def _extract_jobs_by_code(self, section: str, known_jobs: Set[str]) -> Set[str]:
+    def _extract_jobs_by_code(self, section: str, known_jobs: Set[str],
+                              valid_triggers: Optional[Set[str]] = None) -> Set[str]:
         """代码提取 Job（降级方案）- 保守策略"""
-        
+
         found = set()
-        
+
         # 方法1：搜索已知 Job 名称（最可靠）
         for job in known_jobs:
             if job in section:
                 found.add(job)
-        
+
         # 方法2：搜索包含在表格或列表中的 Job 名称
         # 通常 Job 名称出现在表格的第2列
         # 表格格式: | 序号 | Job名称 | 运行环境 | 目的 |
@@ -612,14 +637,19 @@ class ReviewerAgent(BaseAgent):
         for job in table_jobs:
             # 过滤明显不是 Job 的词
             if job.lower() not in self.NON_JOB_KEYWORDS:
+                # 过滤触发类型名（如 pull_request、push、issue_comment 等）
+                if valid_triggers and job.lower() in valid_triggers:
+                    continue
                 found.add(job)
-        
+
         # 方法3：搜索 Markdown 列表格式中的 Job (- job_name 或 * job_name)
         list_jobs = re.findall(r'^[-\*]\s+([a-z][a-z0-9_-]{2,30})\s*$', section, re.MULTILINE)
         for job in list_jobs:
             if job.lower() not in self.NON_JOB_KEYWORDS:
+                if valid_triggers and job.lower() in valid_triggers:
+                    continue
                 found.add(job)
-        
+
         return found
     
     def _bidirectional_validate(
@@ -759,20 +789,20 @@ class ReviewerAgent(BaseAgent):
                 "type": "missing_job_detail",
                 "message": f"实际共 {actual_job_count} 个 Job，报告中仅列出 {reported_job_count} 个，缺少 {missing_count} 个 Job 的详细分析。"
             })
-        
-        actual_step_count = ground_truth.total_steps
-        if actual_step_count > 0:
-            coverage_ratio = reported_step_count / actual_step_count
-        else:
-            coverage_ratio = 1.0
-        
-        if coverage_ratio < 0.8:
+
+        # 用 job 级别覆盖率替代 step 数量比例（避免因 trivial step 导致指标失真）
+        covered_jobs, step_section_jobs = self._count_jobs_with_step_analysis(report)
+        denom = max(step_section_jobs, actual_job_count) if actual_job_count > 0 else 1
+        job_coverage = covered_jobs / denom
+        print(f"  步骤分析 Job 覆盖: {covered_jobs}/{actual_job_count}（{job_coverage*100:.1f}%）")
+
+        if job_coverage < 0.7:
             issues.append({
                 "severity": "incomplete",
                 "type": "weak_analysis",
-                "message": f"步骤详情覆盖率仅 {coverage_ratio*100:.1f}%（{reported_step_count}/{actual_step_count}），建议补充更多步骤分析。"
+                "message": f"步骤分析覆盖 {covered_jobs}/{actual_job_count} 个 Job（{job_coverage*100:.1f}%），建议步骤描述更完整。"
             })
-        
+
         return issues
     
     def _classify_and_process(

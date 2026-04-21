@@ -331,6 +331,7 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 - Job 1: job1
   - 步骤1: xxx
   - 步骤2: xxx
+（只列关键操作步骤，如 build、test、lint、deploy 等有实际意义的步骤；setup/checkout/cache/upload-artifact 等通用 setup 步骤可省略）
 
 **使用的Action**: xxx
 
@@ -1260,16 +1261,25 @@ ARCHITECTURE_JSON -->
 ARCHITECTURE_JSON -->
 ↑ 错误：合并了多个阶段
 
-## 输出要求
+## 输出格式（强制）
+
+**必须严格使用以下标记格式包裹 JSON，缺少任一标记则本轮响应无效：**
+
+```
+<!-- ARCHITECTURE_JSON
+{ ... 完整JSON内容 ... }
+ARCHITECTURE_JSON -->
+```
 
 **必须输出**：
-1. 完整的JSON架构数据
-2. 包含所有触发类型节点
-3. connections从触发节点连接到工作流节点
+1. 以 `<!-- ARCHITECTURE_JSON` 开头（紧跟换行）
+2. 完整的JSON架构数据（包含所有触发类型节点和工作流节点）
+3. 以 `ARCHITECTURE_JSON -->` 结尾
 
 **禁止输出**：
-1. ASCII架构图
-2. 其他任何内容
+1. 裸露的 JSON（不带标记）
+2. ASCII架构图
+3. 标记格式以外的任何内容
 """
 
 
