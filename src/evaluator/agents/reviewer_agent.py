@@ -19,6 +19,7 @@ class GroundTruth:
     actions: Set[str] = field(default_factory=set)
     total_steps: int = 0
     valid_triggers: Set[str] = field(default_factory=set)  # 项目实际使用的所有触发类型
+    jobs_with_steps_count: int = 0  # 有 inline 步骤的 Job 数（排除纯 reusable workflow 调用）
 
 
 @dataclass
@@ -262,10 +263,13 @@ class ReviewerAgent(BaseAgent):
         
         actions = set()
         total_steps = 0
+        jobs_with_steps_count = 0
         for wf_data in ci_data.get("workflows", {}).values():
             for job_data in wf_data.get("jobs", {}).values():
                 steps = job_data.get("steps", [])
                 total_steps += len(steps)
+                if steps:
+                    jobs_with_steps_count += 1
                 for step in steps:
                     uses = step.get("uses", "")
                     if uses and "@" in uses:
@@ -286,6 +290,7 @@ class ReviewerAgent(BaseAgent):
             actions=actions,
             total_steps=total_steps,
             valid_triggers=all_trigger_types,
+            jobs_with_steps_count=jobs_with_steps_count,
         )
     
     def _extract_valid_triggers(self, ci_data: Dict) -> Set[str]:
@@ -768,11 +773,8 @@ class ReviewerAgent(BaseAgent):
         reported_job_count = self._count_job_rows_by_regex(report)
         actual_job_count = sum(len(jobs) for jobs in ground_truth.jobs.values())
 
-        reported_step_count = self._count_step_details_by_regex(report)
-
         print(f"  工作流: 报告={reported_wf_count}, 实际={actual_wf_count}")
         print(f"  Job数量: 报告={reported_job_count}, 实际={actual_job_count}")
-        print(f"  步骤详情: 报告={reported_step_count}, 实际={ground_truth.total_steps}")
 
         if reported_wf_count < actual_wf_count:
             missing_count = actual_wf_count - reported_wf_count
@@ -792,15 +794,17 @@ class ReviewerAgent(BaseAgent):
 
         # 用 job 级别覆盖率替代 step 数量比例（避免因 trivial step 导致指标失真）
         covered_jobs, step_section_jobs = self._count_jobs_with_step_analysis(report)
-        denom = max(step_section_jobs, actual_job_count) if actual_job_count > 0 else 1
-        job_coverage = covered_jobs / denom
-        print(f"  步骤分析 Job 覆盖: {covered_jobs}/{actual_job_count}（{job_coverage*100:.1f}%）")
+        # 分母：仅计 ci_data 中有 inline 步骤的 Job；若全部无步骤则以报告块数兜底
+        effective_job_base = ground_truth.jobs_with_steps_count or step_section_jobs or 1
+        job_coverage = covered_jobs / effective_job_base
+        coverage_ok = job_coverage >= 0.7
+        print(f"  步骤分析覆盖: {'充足' if coverage_ok else '不足'}")
 
-        if job_coverage < 0.7:
+        if not coverage_ok:
             issues.append({
                 "severity": "incomplete",
                 "type": "weak_analysis",
-                "message": f"步骤分析覆盖 {covered_jobs}/{actual_job_count} 个 Job（{job_coverage*100:.1f}%），建议步骤描述更完整。"
+                "message": f"步骤分析覆盖不足（{covered_jobs}/{effective_job_base} 有步骤的 Job，{job_coverage*100:.1f}%），建议步骤描述更完整。"
             })
 
         return issues
