@@ -445,6 +445,10 @@ class CommandHandler:
         1. 尝试通过 langgraph dev server 执行（Studio 可实时高亮）
         2. 如果 server 不可用，fallback 到本地 graph.invoke
         """
+        # 每次新命令开始前清掉上一次的中断状态，防止 Ctrl+C 后续命令立即崩溃
+        if interrupt_controller:
+            interrupt_controller.reset()
+
         # 优先尝试通过 server 执行（Studio 实时高亮）
         result = self._try_invoke_via_server(initial_state)
         if result is not None:
@@ -830,10 +834,7 @@ class CommandHandler:
         self.output_func(f"\n开始分析: {user_input}")
         self.output_func("-" * 50)
         self.output_func("  [使用 LangGraph 工作流]")
-        
-        if interrupt_controller:
-            interrupt_controller.reset()
-        
+
         start_time = time.time()
         
         final_state = None
@@ -1637,37 +1638,40 @@ def run_cli():
             text = text.strip()
             if not text:
                 continue
-            
-            if text.startswith('/'):
-                parser = CommandParser()
-                command, args = parser.parse(text)
-                if command:
-                    should_quit = handler.handle(command, args)
-                    if should_quit:
-                        break
-                else:
-                    # 尝试识别部分命令并显示帮助
-                    parts = text.split()
-                    if len(parts) > 0:
-                        potential_cmd = parts[0][1:]  # 去掉 /
-                        if potential_cmd in CommandParser.COMMANDS:
-                            # 显示该命令的帮助信息
-                            handler.handle(potential_cmd, {})
-                        else:
-                            print(f"未知命令: {potential_cmd}")
+
+            try:
+                if text.startswith('/'):
+                    parser = CommandParser()
+                    command, args = parser.parse(text)
+                    if command:
+                        should_quit = handler.handle(command, args)
+                        if should_quit:
+                            break
+                    else:
+                        # 尝试识别部分命令并显示帮助
+                        parts = text.split()
+                        if len(parts) > 0:
+                            potential_cmd = parts[0][1:]  # 去掉 /
+                            if potential_cmd in CommandParser.COMMANDS:
+                                # 显示该命令的帮助信息
+                                handler.handle(potential_cmd, {})
+                            else:
+                                print(f"未知命令: {potential_cmd}")
+                    continue
+
+                known_projects = [p.name for p in list_projects()]
+                context = {"last_project": handler.context.last_project}
+                parsed = handler.intent_parser.parse(text, known_projects, context)
+
+                if parsed.needs_clarification and parsed.confidence < 0.5:
+                    print(f"\n💡 {parsed.clarification_question}")
+                    continue
+
+                should_quit = handler.route_intent(parsed)
+                if should_quit:
+                    break
+            except InterruptException:
                 continue
-            
-            known_projects = [p.name for p in list_projects()]
-            context = {"last_project": handler.context.last_project}
-            parsed = handler.intent_parser.parse(text, known_projects, context)
-            
-            if parsed.needs_clarification and parsed.confidence < 0.5:
-                print(f"\n💡 {parsed.clarification_question}")
-                continue
-            
-            should_quit = handler.route_intent(parsed)
-            if should_quit:
-                break
     
     except ImportError:
         print("提示: 安装 prompt_toolkit 以获得更好的交互体验")
@@ -1710,37 +1714,40 @@ def run_cli_simple():
         
         if not text:
             continue
-        
-        if text.startswith('/'):
-            parser = CommandParser()
-            command, args = parser.parse(text)
-            if command:
-                should_quit = handler.handle(command, args)
-                if should_quit:
-                    break
-            else:
-                # 尝试识别部分命令并显示帮助
-                parts = text.split()
-                if len(parts) > 0:
-                    potential_cmd = parts[0][1:]  # 去掉 /
-                    if potential_cmd in CommandParser.COMMANDS:
-                        # 显示该命令的帮助信息
-                        handler.handle(potential_cmd, {})
-                    else:
-                        print(f"未知命令: {potential_cmd}")
+
+        try:
+            if text.startswith('/'):
+                parser = CommandParser()
+                command, args = parser.parse(text)
+                if command:
+                    should_quit = handler.handle(command, args)
+                    if should_quit:
+                        break
+                else:
+                    # 尝试识别部分命令并显示帮助
+                    parts = text.split()
+                    if len(parts) > 0:
+                        potential_cmd = parts[0][1:]  # 去掉 /
+                        if potential_cmd in CommandParser.COMMANDS:
+                            # 显示该命令的帮助信息
+                            handler.handle(potential_cmd, {})
+                        else:
+                            print(f"未知命令: {potential_cmd}")
+                continue
+
+            known_projects = [p.name for p in list_projects()]
+            context = {"last_project": handler.context.last_project}
+            parsed = handler.intent_parser.parse(text, known_projects, context)
+
+            if parsed.needs_clarification and parsed.confidence < 0.5:
+                print(f"\n{parsed.clarification_question}")
+                continue
+
+            should_quit = handler.route_intent(parsed)
+            if should_quit:
+                break
+        except InterruptException:
             continue
-        
-        known_projects = [p.name for p in list_projects()]
-        context = {"last_project": handler.context.last_project}
-        parsed = handler.intent_parser.parse(text, known_projects, context)
-        
-        if parsed.needs_clarification and parsed.confidence < 0.5:
-            print(f"\n{parsed.clarification_question}")
-            continue
-        
-        should_quit = handler.route_intent(parsed)
-        if should_quit:
-            break
 
 
 if __name__ == "__main__":
