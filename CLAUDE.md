@@ -115,3 +115,9 @@ interrupt_controller.check()  # 在耗时操作前调用
 - `EVAL_*`：业务配置（如 `EVAL_MAX_RETRIES`）
 - `OPENAI_*`：LLM 配置
 - `LANGCHAIN_*`：LangChain/LangSmith 配置
+
+---
+
+## 提交规范
+
+每次代码修改完成后，必须执行本地 git 提交，不得遗漏。
