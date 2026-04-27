@@ -11,7 +11,7 @@
 """
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 
 def parse_bool_env(value: Optional[str]) -> Optional[bool]:
@@ -78,6 +78,8 @@ class Config:
     # === LLM 配置 ===
     # LLM 最大输出 token
     llm_max_tokens: int = 131072
+    # SSL 证书验证：True=验证, False=跳过, str=自定义 CA 证书路径
+    llm_ssl_verify: Union[bool, str] = True
     
     # === 报告配置 ===
     # 报告最大章节长度
@@ -101,13 +103,32 @@ class Config:
                 return int(os.getenv(key, str(default)))
             except ValueError:
                 return default
-        
+
         def get_float(key: str, default: float) -> float:
             try:
                 return float(os.getenv(key, str(default)))
             except ValueError:
                 return default
-        
+
+        def parse_bool_env(value: str) -> Optional[bool]:
+            """解析布尔环境变量"""
+            lower = value.lower()
+            if lower in ("true", "1", "yes", "on"):
+                return True
+            if lower in ("false", "0", "no", "off"):
+                return False
+            return None
+
+        def get_ssl_verify(key: str, default: Union[bool, str]) -> Union[bool, str]:
+            """获取 SSL 验证配置：True/False 或证书路径"""
+            value = os.getenv(key)
+            if value is None:
+                return default
+            parsed_bool = parse_bool_env(value)
+            if parsed_bool is not None:
+                return parsed_bool
+            return value
+
         return cls(
             # 重试配置
             max_retries=get_int("EVAL_MAX_RETRIES", 3),
@@ -123,6 +144,7 @@ class Config:
             llm_call_timeout=get_int("EVAL_LLM_TIMEOUT", 600),
             # LLM 配置
             llm_max_tokens=get_int("EVAL_LLM_MAX_TOKENS", 131072),
+            llm_ssl_verify=get_ssl_verify("EVAL_LLM_SSL_VERIFY", True),
             # 报告配置
             max_section_length=get_int("EVAL_MAX_SECTION_LENGTH", 3000),
             max_workflows_single=get_int("EVAL_MAX_WORKFLOWS_SINGLE", 20),

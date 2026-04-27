@@ -8,9 +8,14 @@
 由服务端 checkpoint 机制自动支持。
 """
 import os
+import sys
 from dotenv import load_dotenv
 
 load_dotenv()
+
+_model = os.getenv("DEFAULT_MODEL")
+if not _model:
+    raise ValueError("必须设置 DEFAULT_MODEL 环境变量")
 
 from evaluator.core.graphs import create_main_graph
 
@@ -18,7 +23,7 @@ graph = create_main_graph(
     llm_config={
         "api_key": os.getenv("OPENAI_API_KEY"),
         "base_url": os.getenv("OPENAI_BASE_URL"),
-        "model": os.getenv("DEFAULT_MODEL", "glm-4"),
+        "model": _model,
     },
     storage_dir=os.getenv("EVAL_DATA_DIR"),
     studio_mode=True,

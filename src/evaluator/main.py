@@ -25,7 +25,9 @@ def main():
 
     api_key = os.getenv("OPENAI_API_KEY")
     base_url = os.getenv("OPENAI_BASE_URL")
-    model = os.getenv("DEFAULT_MODEL", "glm-4")
+    model = os.getenv("DEFAULT_MODEL")
+    if not model:
+        raise ValueError("必须设置 DEFAULT_MODEL 环境变量")
     use_rich = os.getenv("USE_RICH", "true").lower() != "false"
 
     llm = None

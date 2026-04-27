@@ -12,8 +12,6 @@ from evaluator.llm.tracing import traceable_llm
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = os.getenv("DEFAULT_MODEL", "glm-4")
-
 
 class LLMCallbackHandler(BaseCallbackHandler):
     """LLM 调用回调处理器 - 用于可观测性"""
@@ -52,7 +50,7 @@ class LLMClient:
     
     def __init__(
         self,
-        provider: str = "openai",
+        provider: str,
         model: Optional[str] = None,
         api_key: Optional[str] = None,
         base_url: Optional[str] = None,
@@ -61,7 +59,9 @@ class LLMClient:
     ):
         # 如果没有指定模型，从环境变量读取
         if model is None:
-            model = os.getenv("DEFAULT_MODEL", "glm-4")
+            model = os.getenv("DEFAULT_MODEL")
+            if not model:
+                raise ValueError("必须设置 DEFAULT_MODEL 环境变量或传入 model 参数")
         """
         初始化 LLM 客户端
         
@@ -89,19 +89,23 @@ class LLMClient:
         
         # 创建 LangChain ChatOpenAI 实例
         self._callback_handler = LLMCallbackHandler(self.__class__.__name__)
-        
+
         try:
             from evaluator.config import config
             has_config = True
         except ImportError:
             has_config = False
-        
+
         request_timeout = config.llm_request_timeout if has_config else 300
         default_max_tokens = config.llm_max_tokens if has_config else 131072
-        
+        ssl_verify = config.llm_ssl_verify if has_config else True
+
         # 创建可取消的 HTTP 客户端
-        self._httpx_client = httpx.Client(timeout=httpx.Timeout(request_timeout))
-        
+        self._httpx_client = httpx.Client(
+            timeout=httpx.Timeout(request_timeout),
+            verify=ssl_verify
+        )
+
         client_kwargs = {
             "model": model,
             "api_key": self.api_key,
@@ -112,9 +116,9 @@ class LLMClient:
             "http_client": self._httpx_client,
         }
         client_kwargs["max_tokens"] = max_tokens if max_tokens is not None else default_max_tokens
-        
+
         self._client = ChatOpenAI(**client_kwargs)
-        
+
         # 注册中断回调
         self._register_interrupt_callback()
     
@@ -328,11 +332,16 @@ _default_client: Optional[LLMClient] = None
 def get_default_client() -> LLMClient:
     """获取默认的 LLM 客户端实例"""
     global _default_client
-    
+
     if _default_client is None:
-        model = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
-        _default_client = LLMClient(model=model)
-    
+        model = os.getenv("DEFAULT_MODEL")
+        if not model:
+            raise ValueError("必须设置 DEFAULT_MODEL 环境变量")
+        provider = os.getenv("LLM_PROVIDER")
+        if not provider:
+            raise ValueError("必须设置 LLM_PROVIDER 环境变量")
+        _default_client = LLMClient(provider=provider, model=model)
+
     return _default_client
 
 
@@ -342,14 +351,21 @@ def create_client(
 ) -> LLMClient:
     """
     创建 LLM 客户端的便捷函数
-    
+
     Args:
         model: 模型名称（None 则从环境变量读取）
         **kwargs: 其他参数传递给 LLMClient
-    
+
     Returns:
         LLMClient 实例
     """
     if model is None:
-        model = os.getenv("DEFAULT_MODEL", "gpt-4o-mini")
+        model = os.getenv("DEFAULT_MODEL")
+        if not model:
+            raise ValueError("必须设置 DEFAULT_MODEL 环境变量或传入 model 参数")
+    if "provider" not in kwargs:
+        provider = os.getenv("LLM_PROVIDER")
+        if not provider:
+            raise ValueError("必须设置 LLM_PROVIDER 环境变量或传入 provider 参数")
+        kwargs["provider"] = provider
     return LLMClient(model=model, **kwargs)
