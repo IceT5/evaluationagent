@@ -99,6 +99,11 @@ class LLMClient:
         request_timeout = config.llm_request_timeout if has_config else 300
         default_max_tokens = config.llm_max_tokens if has_config else 131072
         ssl_verify = config.llm_ssl_verify if has_config else True
+        user_agent = (
+            config.llm_user_agent
+            if has_config
+            else "opencode/1.3.13 ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.11"
+        )
 
         # 创建可取消的 HTTP 客户端
         self._httpx_client = httpx.Client(
@@ -114,6 +119,7 @@ class LLMClient:
             "request_timeout": request_timeout,
             "callbacks": [self._callback_handler],
             "http_client": self._httpx_client,
+            "default_headers": {"User-Agent": user_agent},
         }
         client_kwargs["max_tokens"] = max_tokens if max_tokens is not None else default_max_tokens
 

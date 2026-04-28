@@ -80,6 +80,8 @@ class Config:
     llm_max_tokens: int = 131072
     # SSL 证书验证：True=验证, False=跳过, str=自定义 CA 证书路径
     llm_ssl_verify: Union[bool, str] = True
+    # 模拟 opencode 的 User-Agent
+    llm_user_agent: str = "opencode/1.3.13 ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.11"
     
     # === 报告配置 ===
     # 报告最大章节长度
@@ -145,6 +147,10 @@ class Config:
             # LLM 配置
             llm_max_tokens=get_int("EVAL_LLM_MAX_TOKENS", 131072),
             llm_ssl_verify=get_ssl_verify("EVAL_LLM_SSL_VERIFY", True),
+            llm_user_agent=os.getenv(
+                "EVAL_LLM_USER_AGENT",
+                "opencode/1.3.13 ai-sdk/provider-utils/4.0.21 runtime/bun/1.3.11"
+            ),
             # 报告配置
             max_section_length=get_int("EVAL_MAX_SECTION_LENGTH", 3000),
             max_workflows_single=get_int("EVAL_MAX_WORKFLOWS_SINGLE", 20),
