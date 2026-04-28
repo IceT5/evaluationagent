@@ -56,24 +56,27 @@ class QualityCheckAgent(BaseAgent):
         assembly_validation = self._validate_assembled_data(assembled_data)
         if not assembly_validation["valid"]:
             issues = assembly_validation.get("issues", [])
-            print("  [Quality] assembly 关键结构不完整，进入最终校验失败")
+            needs_retry = assembly_validation.get("needs_retry", True)
+            retry_reason = assembly_validation.get("retry_reason", "assembly 关键结构不完整")
+            failure_scope = assembly_validation.get("failure_scope", "final_validation")
+            print(f"  [Quality] assembly 校验失败: {'; '.join(issues)}")
             return {
                 **state,
                 "contract_check_result": contract_result,
                 "validation_result": {
                     "status": "failed",
                     "valid": False,
-                    "needs_retry": True,
-                    "retry_reason": "assembly 关键结构不完整",
-                    "failure_scope": "final_validation",
+                    "needs_retry": needs_retry,
+                    "retry_reason": retry_reason,
+                    "failure_scope": failure_scope,
                     "issues": issues,
                     "missing_workflows": [],
                     "missing_trigger_types": [],
                 },
                 "cicd_failure_data": {
                     "failure_type": "final_validation_failure",
-                    "failure_scope": "final_validation",
-                    "reason": "assembly_missing_required_fields",
+                    "failure_scope": failure_scope,
+                    "reason": retry_reason,
                 },
                 "architecture_json": {"layers": [], "connections": []},
             }
@@ -169,10 +172,31 @@ class QualityCheckAgent(BaseAgent):
         if assembly_status == "incomplete" and blocking_fields:
             issues.append(f"assembly 缺少关键字段: {', '.join(blocking_fields)}")
 
-        return {
+        # 检查 findings 数据是否全为空（Round 5 解析失败的典型症状）
+        summary_input = assembled_data.get("artifacts", {}).get("summary_input_data", {})
+        findings_empty = (
+            not summary_input.get("scores")
+            and not summary_input.get("strengths")
+            and not summary_input.get("weaknesses")
+            and not summary_input.get("recommendations")
+        )
+        if findings_empty:
+            issues.append("summary_input_data 为空（Round 5 解析失败）")
+
+        result = {
             "valid": not issues,
             "issues": issues,
         }
+
+        # 当 findings 为空时，携带 retry 指令供 RetryHandlingAgent 使用
+        if findings_empty:
+            result.update({
+                "needs_retry": True,
+                "retry_reason": "findings_empty",
+                "failure_scope": "multi_round_summary",
+            })
+
+        return result
 
     def _build_validation_issues(self, validation: Dict[str, Any]) -> list:
         issues = []

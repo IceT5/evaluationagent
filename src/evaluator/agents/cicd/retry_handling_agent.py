@@ -129,8 +129,17 @@ class RetryHandlingAgent(BaseAgent):
             trigger_source = "quality_check"
             retry_reason = validation_result.get("retry_reason", "final_validation_failed")
             failure_scope = validation_result.get("failure_scope", "final_validation")
-            retry_entry_stage = "assembly" if failure_scope == "final_validation" else "batch_execute"
-            retry_mode = "reassemble" if failure_scope == "final_validation" else "rerun_batch"
+
+            # 根据 failure_scope 决定 retry 策略
+            if failure_scope == "final_validation":
+                retry_entry_stage = "assembly"
+                retry_mode = "reassemble"
+            elif failure_scope == "multi_round_summary":
+                retry_entry_stage = "multi_round"
+                retry_mode = "rerun_multi_round"
+            else:
+                retry_entry_stage = "batch_execute"
+                retry_mode = "rerun_batch"
         elif review_result.get("status") in {"critical", "incomplete"}:
             requested = True
             trigger_source = "review"
