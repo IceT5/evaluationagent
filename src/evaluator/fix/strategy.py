@@ -35,53 +35,53 @@ class AnchorResolver:
     def _resolve_workflow_section(self, anchor: Dict, content: str) -> FixPosition:
         """定位工作流章节"""
         wf_name = anchor.get("workflow", "")
-        pattern = rf"####\s+\d+\.\d+\s+{re.escape(wf_name)}"
+        pattern = rf"#{3,4}\s+\d+\.\d+\s+{re.escape(wf_name)}"
         match = re.search(pattern, content)
-        
+
         if match:
-            next_section = re.search(r'\n####\s+\d+\.\d+', content[match.end():])
+            next_section = re.search(r'\n#{3,4}\s+\d+\.\d+', content[match.end():])
             if next_section:
                 end = match.end() + next_section.start()
             else:
                 end = len(content)
             return FixPosition(start=match.start(), end=end, file="report")
-        
+
         return FixPosition.not_found()
     
     def _resolve_trigger_yaml(self, anchor: Dict, content: str) -> FixPosition:
         """定位触发条件 YAML 块（用于插入）"""
         wf_name = anchor.get("workflow", "")
-        
-        wf_pattern = rf"####\s+\d+\.\d+\s+{re.escape(wf_name)}"
+
+        wf_pattern = rf"#{3,4}\s+\d+\.\d+\s+{re.escape(wf_name)}"
         wf_match = re.search(wf_pattern, content)
         if not wf_match:
             return FixPosition.not_found()
-        
+
         section_start = wf_match.start()
-        next_section = re.search(r'\n####\s+\d+\.\d+', content[wf_match.end():])
+        next_section = re.search(r'\n#{3,4}\s+\d+\.\d+', content[wf_match.end():])
         section_end = wf_match.end() + next_section.start() if next_section else len(content)
         section = content[section_start:section_end]
-        
+
         yaml_pattern = r'触发条件.*?```yaml(.*?)```'
         yaml_match = re.search(yaml_pattern, section, re.DOTALL)
-        
+
         if yaml_match:
             insert_pos = section_start + yaml_match.end() - 3
             return FixPosition(start=insert_pos, end=insert_pos, file="report")
-        
+
         return FixPosition.not_found()
     
     def _resolve_job_table(self, anchor: Dict, content: str) -> FixPosition:
         """定位 Job 表格（用于插入）"""
         wf_name = anchor.get("workflow", "")
-        
-        wf_pattern = rf"####\s+\d+\.\d+\s+{re.escape(wf_name)}"
+
+        wf_pattern = rf"#{3,4}\s+\d+\.\d+\s+{re.escape(wf_name)}"
         wf_match = re.search(wf_pattern, content)
         if not wf_match:
             return FixPosition.not_found()
-        
+
         section_start = wf_match.start()
-        next_section = re.search(r'\n####\s+\d+\.\d+', content[wf_match.end():])
+        next_section = re.search(r'\n#{3,4}\s+\d+\.\d+', content[wf_match.end():])
         section_end = wf_match.end() + next_section.start() if next_section else len(content)
         section = content[section_start:section_end]
         

@@ -26,6 +26,105 @@ def _extract_subsection(text: str, title: str) -> str:
     return '\n'.join(result).strip()
 
 
+def _build_findings_markdown(scores: dict, strengths: list, weaknesses: list, recommendations: list) -> str:
+    """构建关键发现和建议的 Markdown（表格格式）
+
+    Args:
+        scores: 评分数据 {dimension: {score, rationale}}
+        strengths: 优势列表
+        weaknesses: 问题列表
+        recommendations: 建议列表
+
+    Returns:
+        完整的关键发现和建议 Markdown
+    """
+    lines = ["## 关键发现和建议\n"]
+
+    # 1. 架构特点总结（评分表格）
+    if scores:
+        lines.append("### 架构特点总结\n")
+        lines.append("| 维度 | 评分 | 说明 |")
+        lines.append("|------|------|------|")
+
+        dimension_names = {
+            "architecture_design": "架构设计",
+            "best_practices": "最佳实践",
+            "security": "安全性",
+            "maintainability": "可维护性",
+            "scalability": "可扩展性"
+        }
+
+        for key, value in scores.items():
+            if isinstance(value, dict):
+                score = value.get("score", "-")
+                rationale = value.get("rationale", "")
+                dimension_name = dimension_names.get(key, key)
+                lines.append(f"| {dimension_name} | {score} | {rationale} |")
+
+        lines.append("")
+
+    # 2. 优势表格
+    if strengths:
+        lines.append("### 优势\n")
+        lines.append("| 优势 | 描述 | 证据 |")
+        lines.append("|------|------|------|")
+
+        for item in strengths:
+            if isinstance(item, dict):
+                title = item.get("title", "")
+                description = item.get("description", "")
+                evidence = item.get("evidence", "")
+                lines.append(f"| {title} | {description} | {evidence} |")
+            elif isinstance(item, str):
+                lines.append(f"| {item} | - | - |")
+
+        lines.append("")
+
+    # 3. 问题表格
+    if weaknesses:
+        lines.append("### 问题\n")
+        lines.append("| 问题 | 描述 | 影响 | 建议 |")
+        lines.append("|------|------|------|------|")
+
+        for item in weaknesses:
+            if isinstance(item, dict):
+                title = item.get("title", "")
+                description = item.get("description", "")
+                impact = item.get("impact", "")
+                suggestion = item.get("suggestion", "")
+                lines.append(f"| {title} | {description} | {impact} | {suggestion} |")
+            elif isinstance(item, str):
+                lines.append(f"| {item} | - | - | - |")
+
+        lines.append("")
+
+    # 4. 建议表格
+    if recommendations:
+        lines.append("### 建议\n")
+        lines.append("| 优先级 | 建议 | 预期收益 |")
+        lines.append("|--------|------|----------|")
+
+        priority_map = {
+            "high": "🔴 高",
+            "medium": "🟡 中",
+            "low": "🟢 低"
+        }
+
+        for item in recommendations:
+            if isinstance(item, dict):
+                priority = item.get("priority", "")
+                content = item.get("content", "")
+                benefit = item.get("expected_benefit", "")
+                priority_display = priority_map.get(priority, priority)
+                lines.append(f"| {priority_display} | {content} | {benefit} |")
+            elif isinstance(item, str):
+                lines.append(f"| - | {item} | - |")
+
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def _format_finding_item(item) -> str:
     """格式化 strengths/weaknesses 条目（str 或 dict）"""
     if isinstance(item, str):
@@ -166,22 +265,7 @@ class ResultMergingAgent(BaseAgent):
             "recommendations": recommendations,
         }
 
-        findings_markdown = "## 关键发现和建议\n\n"
-        if strengths:
-            findings_markdown += "### 优势\n"
-            for item in strengths:
-                findings_markdown += f"- {_format_finding_item(item)}\n"
-            findings_markdown += "\n"
-        if weaknesses:
-            findings_markdown += "### 问题\n"
-            for item in weaknesses:
-                findings_markdown += f"- {_format_finding_item(item)}\n"
-            findings_markdown += "\n"
-        if recommendations:
-            findings_markdown += "### 建议\n"
-            for item in recommendations:
-                findings_markdown += f"- {_format_recommendation_item(item)}\n"
-            findings_markdown += "\n"
+        findings_markdown = _build_findings_markdown(scores, strengths, weaknesses, recommendations)
 
         missing_fields = []
         if not overview:
