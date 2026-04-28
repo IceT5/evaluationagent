@@ -202,11 +202,38 @@ class ReporterAgent(BaseAgent):
         return ""
     
     def _extract_appendix(self, content: str) -> str:
-        """提取附录"""
-        match = re.search(r'^##\s+附录[：:]*[^\n]*$(.*?)(?=^##\s+|^<!--\s*ARCHITECTURE_JSON|\Z)', content, re.MULTILINE | re.DOTALL)
-        if match:
-            return f"## 附录{match.group(1)}"
-        return ""
+        """提取附录。
+
+        使用逐行扫描 + fence 状态机，避免正则把 fenced code block 内的
+        '## xxx' 误判为章节边界，导致附录内容被提前截断。
+        """
+        lines = content.splitlines(keepends=True)
+        in_appendix = False
+        in_fence = False
+        result = []
+
+        for line in lines:
+            stripped = line.strip()
+
+            # 检测 fence 边界（``` 或 ~~~），仅在行首
+            if stripped.startswith("```") or stripped.startswith("~~~"):
+                in_fence = not in_fence
+
+            if not in_appendix:
+                # 仅在 fence 外识别附录起始行
+                if not in_fence and re.match(r'^##\s+附录', line):
+                    in_appendix = True
+                    result.append(line)
+            else:
+                # 仅在 fence 外识别章节结束条件
+                if not in_fence and (
+                    re.match(r'^##\s+', line) or
+                    re.match(r'^<!--\s*ARCHITECTURE_JSON', line)
+                ):
+                    break
+                result.append(line)
+
+        return "".join(result) if result else ""
     
     def _extract_findings(self, content: str) -> str:
         """提取关键发现和建议"""
