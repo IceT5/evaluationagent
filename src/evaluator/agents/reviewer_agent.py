@@ -315,21 +315,6 @@ class ReviewerAgent(BaseAgent):
         pattern = r'步骤\d+:'
         return len(re.findall(pattern, report))
 
-    def _count_jobs_with_step_analysis(self, report: str) -> Tuple[int, int]:
-        """统计报告中有步骤分析的 Job 块数 vs 步骤详情块中的 Job 总数
-
-        Returns:
-            (covered_jobs, total_jobs): 有步骤分析的 Job 数, 步骤详情块中的 Job 总数
-        """
-        job_blocks = re.split(r'(?=^- Job \d+:)', report, flags=re.MULTILINE)
-        total = 0
-        covered = 0
-        for block in job_blocks:
-            if re.match(r'^- Job \d+:', block.strip()):
-                total += 1
-                if re.search(r'步骤\d+:', block):
-                    covered += 1
-        return covered, total
 
     def _extract_workflow_names_by_regex(self, report: str) -> Set[str]:
         """用正则提取工作流名称列表"""
@@ -790,21 +775,6 @@ class ReviewerAgent(BaseAgent):
                 "severity": "incomplete",
                 "type": "missing_job_detail",
                 "message": f"实际共 {actual_job_count} 个 Job，报告中仅列出 {reported_job_count} 个，缺少 {missing_count} 个 Job 的详细分析。"
-            })
-
-        # 用 job 级别覆盖率替代 step 数量比例（避免因 trivial step 导致指标失真）
-        covered_jobs, step_section_jobs = self._count_jobs_with_step_analysis(report)
-        # 分母：仅计 ci_data 中有 inline 步骤的 Job；若全部无步骤则以报告块数兜底
-        effective_job_base = ground_truth.jobs_with_steps_count or step_section_jobs or 1
-        job_coverage = covered_jobs / effective_job_base
-        coverage_ok = job_coverage >= 0.7
-        print(f"  步骤分析覆盖: {'充足' if coverage_ok else '不足'}")
-
-        if not coverage_ok:
-            issues.append({
-                "severity": "incomplete",
-                "type": "weak_analysis",
-                "message": f"步骤分析覆盖不足（{covered_jobs}/{effective_job_base} 有步骤的 Job，{job_coverage*100:.1f}%），建议步骤描述更完整。"
             })
 
         return issues

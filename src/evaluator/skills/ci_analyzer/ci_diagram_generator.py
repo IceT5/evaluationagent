@@ -331,7 +331,18 @@ def _generate_batch_prompt(raw_data: Dict, global_context: str, batch_names: Lis
 - Job 1: job1
   - 步骤1: xxx
   - 步骤2: xxx
-（只列关键操作步骤，如 build、test、lint、deploy 等有实际意义的步骤；setup/checkout/cache/upload-artifact 等通用 setup 步骤可省略）
+
+**步骤格式规范**（重要）：
+1. 必须使用 `步骤N:` 格式（N为数字，无空格，冒号为中文冒号）
+2. 禁止使用以下格式：
+   - ❌ `（调用 xxx.yml）` - 括号描述
+   - ❌ `- 调用 xxx.yml` - 无编号列表
+   - ❌ `步骤 1:` - 有空格
+   - ❌ `Step 1:` - 英文
+3. 对于调用其他 workflow 的 Job，也要用步骤格式：
+   - ✅ `步骤1: 调用 _linux-build.yml 执行构建`
+4. 只列关键操作步骤（build、test、lint、deploy 等），省略通用 setup 步骤（checkout、cache、upload-artifact）
+5. 如果 Job 只有1个步骤，也要写成 `步骤1:` 格式
 
 **使用的Action**: xxx
 

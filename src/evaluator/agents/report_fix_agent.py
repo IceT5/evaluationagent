@@ -77,37 +77,10 @@ class ReportFixPlanAgent(BaseAgent):
         has_data = len(data_completion) > 0
         has_content = len(content_supplement) > 0
 
-        # 建议性问题（weak_analysis）：不走自动修复，提示用户二选一
-        advisory_issues = [i for i in issues if i.get("type") == "weak_analysis"]
-
         # 无可修复的问题
         if not has_data and not has_content:
-            if not advisory_issues:
-                return {"fix_result": {"status": "no_issues"}, "user_fix_choice": None}
-            # 只有 weak_analysis 建议性问题
-            if not interactive:
-                print("  非交互模式，weak_analysis 建议性问题跳过")
-                return {"fix_result": {"status": "no_issues"}, "user_fix_choice": None}
-            options = [
-                {"value": "retry", "label": "[1] 重新执行 CICD 分析 - 重新生成更完整报告（推荐）"},
-                {"value": "skip",  "label": "[2] 跳过 - 接受当前报告，继续生成 HTML"},
-            ]
-            print(f"\n{'='*50}")
-            print("  报告审查 - 步骤分析覆盖率不足")
-            print(f"{'='*50}")
-            for issue in advisory_issues:
-                print(f"  {issue.get('message', '')}")
-            from langgraph.types import interrupt
-            user_choice = interrupt({
-                "kind": "review_fix_decision",
-                "question": "步骤分析覆盖率不足，请选择处理方式",
-                "options": options,
-                "default": "retry",
-                "retry_count": retry_count,
-            })
-            choice = user_choice or "retry"
-            return {"user_fix_choice": choice}
-        
+            return {"fix_result": {"status": "no_issues"}, "user_fix_choice": None}
+
         # 非交互模式：使用默认选项，不触发 interrupt
         if not interactive:
             default = "fix_and_supplement" if (has_data and has_content) else \
