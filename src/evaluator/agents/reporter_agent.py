@@ -1044,12 +1044,16 @@ class ReporterAgent(BaseAgent):
             fill: rgba(255,255,255,0.7);
         }
         .arch-connection {
-            stroke-width: 2;
+            stroke-width: 1.5;
             fill: none;
-            opacity: 0.6;
+            opacity: 0.15;
             marker-end: url(#arrowhead);
+            transition: opacity 0.3s, stroke-width 0.3s;
         }
-        .arch-connection.highlight { opacity: 1; stroke-width: 3; }
+        .arch-connection.highlight { opacity: 0.9; stroke-width: 2.5; }
+        .arch-node { cursor: pointer; transition: opacity 0.3s; }
+        .arch-node.dimmed { opacity: 0.3; }
+        .arch-node.highlight-node { filter: brightness(1.2); }
         
         /* 工作流卡片 */
         .workflow-card {
@@ -1627,6 +1631,65 @@ class ReporterAgent(BaseAgent):
             }}
         }});
         
+        // 节点点击：高亮上下游连线 + 显示详情
+        function highlightConnections(nodeId, event) {{
+            const connections = document.querySelectorAll('.arch-connection');
+            const nodes = document.querySelectorAll('.arch-node');
+
+            // toggle：再次点击同一节点则取消高亮
+            const clickedNode = document.querySelector('[data-node-id="' + nodeId + '"]');
+            if (clickedNode && clickedNode.classList.contains('highlight-node')) {{
+                resetHighlight();
+                showDetail(nodeId, clickedNode.querySelector('.arch-node-title')?.textContent || nodeId, event);
+                return;
+            }}
+
+            // 找到与该节点相关的所有连线
+            const relatedNodeIds = new Set([nodeId]);
+            connections.forEach(conn => {{
+                const src = conn.getAttribute('data-source');
+                const tgt = conn.getAttribute('data-target');
+                if (src === nodeId || tgt === nodeId) {{
+                    conn.classList.add('highlight');
+                    relatedNodeIds.add(src);
+                    relatedNodeIds.add(tgt);
+                }} else {{
+                    conn.classList.remove('highlight');
+                }}
+            }});
+
+            // 高亮相关节点，弱化其他节点
+            nodes.forEach(node => {{
+                const nid = node.getAttribute('data-node-id');
+                if (relatedNodeIds.has(nid)) {{
+                    node.classList.add('highlight-node');
+                    node.classList.remove('dimmed');
+                }} else {{
+                    node.classList.remove('highlight-node');
+                    node.classList.add('dimmed');
+                }}
+            }});
+
+            // 同时显示详情面板
+            const label = clickedNode?.querySelector('.arch-node-title')?.textContent || nodeId;
+            showDetail(nodeId, label, event);
+        }}
+
+        function resetHighlight() {{
+            document.querySelectorAll('.arch-connection').forEach(c => c.classList.remove('highlight'));
+            document.querySelectorAll('.arch-node').forEach(n => {{
+                n.classList.remove('highlight-node');
+                n.classList.remove('dimmed');
+            }});
+        }}
+
+        // 点击 SVG 空白区域重置高亮
+        document.querySelector('.architecture-svg')?.addEventListener('click', function(e) {{
+            if (e.target === this || e.target.tagName === 'svg') {{
+                resetHighlight();
+            }}
+        }});
+
         // 节点点击更新面板
         function showDetail(nodeId, nodeLabel, event) {{
             activeNodeId = nodeId;
@@ -1944,38 +2007,47 @@ class ReporterAgent(BaseAgent):
                     "height": node_height
                 }
                 
-                onclick = f"showDetail('{node_id}', '{label}', event)"
-                
+                onclick = f"highlightConnections('{node_id}', event)"
+
                 svg.append(f'''
-    <g class="arch-node" onclick="{onclick}">
-        <rect x="{node_x}" y="{node_y}" width="{node_width}" height="{node_height}" 
+    <g class="arch-node" data-node-id="{node_id}" onclick="{onclick}">
+        <rect x="{node_x}" y="{node_y}" width="{node_width}" height="{node_height}"
               class="arch-node-bg" fill="{bg_color}" stroke="{border_color}"/>
         <text x="{node_x + node_width/2}" y="{node_y + 28}" class="arch-node-title" text-anchor="middle">{label}</text>
         <text x="{node_x + node_width/2}" y="{node_y + 48}" class="arch-node-desc" text-anchor="middle">{description}</text>
     </g>''')
-        
+
         for conn in connections:
             source = conn.get("source")
             target = conn.get("target")
-            
+            conn_type = conn.get("type", "trigger")
+
             if source in node_positions and target in node_positions:
                 src = node_positions[source]
                 tgt = node_positions[target]
-                
+
                 start_x = src["x"] + src["width"] / 2
                 start_y = src["y"] + src["height"]
                 end_x = tgt["x"]
                 end_y = tgt["y"]
-                
+
                 mid_y = (start_y + end_y) / 2
-                
+
                 path = f"M {start_x} {start_y} C {start_x} {mid_y}, {end_x} {mid_y}, {end_x} {end_y}"
-                
+
+                # 根据类型设置样式
+                if conn_type == "workflow_call":
+                    stroke_color = "#4A90D9"
+                    stroke_dasharray = "6,3"
+                else:
+                    stroke_color = "#999"
+                    stroke_dasharray = "none"
+
                 svg.append(f'''
-    <path class="arch-connection" d="{path}" stroke="{self.LAYER_COLORS[0][0]}"/>''')
-        
+    <path class="arch-connection" data-source="{source}" data-target="{target}" data-type="{conn_type}" d="{path}" stroke="{stroke_color}" stroke-dasharray="{stroke_dasharray}"/>''')
+
         svg.append('</svg>')
-        
+
         return '\n'.join(svg)
     
     def _generate_statistics_html(self, statistics: dict) -> str:

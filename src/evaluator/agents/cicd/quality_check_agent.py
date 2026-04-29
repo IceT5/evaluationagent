@@ -106,6 +106,7 @@ class QualityCheckAgent(BaseAgent):
             }
 
         architecture_data = self._fix_trigger_layer(architecture_data, ci_data)
+        architecture_data = self._supplement_connections(architecture_data, ci_data)
         
         validation = self._validate_architecture(ci_data, architecture_data)
         
@@ -422,9 +423,111 @@ class QualityCheckAgent(BaseAgent):
                             "label": wf_name,
                             "description": "从工作流补充",
                         })
-        
+
         return architecture_data
-    
+
+    def _supplement_connections(
+        self,
+        architecture_data: Dict,
+        ci_data: Optional[Dict]
+    ) -> Dict:
+        """用 ci_data 补全 connections
+
+        补全两类连线：
+        1. trigger→workflow：从 workflow 的 triggers 提取
+        2. workflow→workflow：从 jobs.calls_workflows 提取
+        """
+        if not ci_data:
+            return architecture_data
+
+        # 1. 构建 node id → label 和 label → node id 映射
+        node_id_to_label = {}
+        label_to_node_id = {}
+        for layer in architecture_data.get("layers", []):
+            for node in layer.get("nodes", []):
+                nid = node.get("id")
+                label = node.get("label", "")
+                if nid and label:
+                    node_id_to_label[nid] = label
+                    label_to_node_id[label] = nid
+
+        # 2. 收集现有 connections（去重用）
+        existing_connections = set()
+        for conn in architecture_data.get("connections", []):
+            src = conn.get("source")
+            tgt = conn.get("target")
+            if src and tgt:
+                existing_connections.add((src, tgt))
+
+        new_connections = []
+
+        # 3. 补全 trigger→workflow 连线
+        workflows = ci_data.get("workflows", {})
+        for wf_name, wf_data in workflows.items():
+            wf_node_id = label_to_node_id.get(wf_name)
+            if not wf_node_id:
+                continue
+
+            triggers = wf_data.get("triggers", [])
+            for trigger in triggers:
+                trigger_node_id = f"trigger-{trigger}"
+                if trigger_node_id in node_id_to_label:
+                    if (trigger_node_id, wf_node_id) not in existing_connections:
+                        new_connections.append({
+                            "source": trigger_node_id,
+                            "target": wf_node_id,
+                            "type": "trigger"
+                        })
+                        existing_connections.add((trigger_node_id, wf_node_id))
+
+        # 4. 补全 workflow→workflow 连线
+        for caller_wf_name, wf_data in workflows.items():
+            caller_node_id = label_to_node_id.get(caller_wf_name)
+            if not caller_node_id:
+                continue
+
+            for job_name, job_data in wf_data.get("jobs", {}).items():
+                calls_workflows = job_data.get("calls_workflows", [])
+                for called_ref in calls_workflows:
+                    # 归一化 workflow ref
+                    called_wf_name = self._normalize_workflow_ref(called_ref)
+                    called_node_id = label_to_node_id.get(called_wf_name)
+
+                    if called_node_id and (caller_node_id, called_node_id) not in existing_connections:
+                        new_connections.append({
+                            "source": caller_node_id,
+                            "target": called_node_id,
+                            "type": "workflow_call"
+                        })
+                        existing_connections.add((caller_node_id, called_node_id))
+
+        # 5. 合并到 architecture_data
+        if new_connections:
+            architecture_data.setdefault("connections", []).extend(new_connections)
+            print(f"  [Connections] 补全了 {len(new_connections)} 条连线 (trigger: {sum(1 for c in new_connections if c.get('type') == 'trigger')}, workflow_call: {sum(1 for c in new_connections if c.get('type') == 'workflow_call')})")
+
+        return architecture_data
+
+    def _normalize_workflow_ref(self, ref: str) -> str:
+        """归一化 workflow 引用为文件名
+
+        Examples:
+            ./.github/workflows/_linux-build.yml → _linux-build.yml
+            pytorch/pytorch/.github/workflows/_runner-determinator.yml@main → _runner-determinator.yml
+        """
+        if not ref:
+            return ""
+
+        # 移除 @ref 后缀
+        if "@" in ref:
+            ref = ref.split("@")[0]
+
+        # 提取文件名
+        if "/" in ref:
+            ref = ref.split("/")[-1]
+
+        return ref
+
     def _organize_stages(
         self,
         content: str,

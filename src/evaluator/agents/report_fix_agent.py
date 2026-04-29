@@ -203,7 +203,7 @@ class ReportFixApplyAgent(BaseAgent):
         report = self._read_report(state)
         ci_data = state.get("ci_data", {})
         assembled_data = state.get("cicd_assembled_data") or {}
-        arch = assembled_data.get("artifacts", {}).get("architecture_json") or state.get("architecture_json", {})
+        arch = state.get("architecture_json") or assembled_data.get("artifacts", {}).get("architecture_json", {})
         summary = state.get("analysis_summary", {})
         retry_count = state.get("review_retry_count", 0)
         storage_dir = state.get("storage_dir", "")
